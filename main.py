@@ -19,7 +19,7 @@ class Reader:
             raise EOFError("Unexpected end of file")
         return data
     
-    def read_byte(self) -> int:
+    def read_uint8(self) -> int:
         """Read a single unsigned byte."""
         return struct.unpack('B', self.read_bytes(1))[0]
     
@@ -35,12 +35,7 @@ class Reader:
         """Read a double-precision float."""
         return struct.unpack('d', self.read_bytes(8))[0]
 
-class Binary:
-    def __str__(self) -> str:
-        attrs = ', '.join(f"{k}={v!r}" for k, v in self.__dict__.items())
-        return f"{self.__class__.__name__}({attrs})"
-
-class Header(Binary):
+class Header:
     signature: bytes
     version: int
     format: int
@@ -55,18 +50,17 @@ class Header(Binary):
         self.signature = file.read_bytes(4)
         if self.signature != b'\x1bLua':
             raise ValueError("Not a valid Lua bytecode file")
-        self.version = file.read_byte()
-        self.format = file.read_byte()
-        self.endianness = file.read_byte()
-        self.int_len = file.read_byte()
-        self.size_len = file.read_byte()
-        self.inst_len = file.read_byte()
-        self.number_len = file.read_byte()
-        number_format = file.read_byte()
-        self.number_is_int = (number_format != 0)
+        self.version = file.read_uint8()
+        self.format = file.read_uint8()
+        self.endianness = file.read_uint8()
+        self.int_len = file.read_uint8()
+        self.size_len = file.read_uint8()
+        self.inst_len = file.read_uint8()
+        self.number_len = file.read_uint8()
+        self.number_is_int = (file.read_uint8() != 0)
 
 
-class String(Binary):
+class String:
     size: int
     value: str
     
@@ -77,16 +71,16 @@ class String(Binary):
     def __str__(self) -> str:
         return self.value
 
-class Value(Binary):
+class Value:
     type: int
     value: Any
     
     def __init__(self, file: Reader):
-        self.type = file.read_byte()
+        self.type = file.read_uint8()
         if self.type == LUA_TNIL:
             self.value = None
         elif self.type == LUA_TBOOLEAN:
-            self.value = file.read_byte() != 0
+            self.value = file.read_uint8() != 0
         elif self.type == LUA_TNUMBER:
             self.value = file.read_double()
         elif self.type == LUA_TSTRING:
@@ -105,18 +99,27 @@ class Value(Binary):
             return f'"{self.value}"'
         return str(self.value)
 
-class Code(Binary):
+class Instruction:
+    _instruction: int
+
+    def __init__(self, file: Reader):
+        self._instruction = file.read_uint32()
+
+    def __str__(self):
+        return f"0x{self._instruction:08x}"
+
+class Code:
     sizecode: int
     code: list[int]
     
     def __init__(self, file: Reader):
         self.sizecode = file.read_uint32()
-        self.code = [file.read_uint32() for _ in range(self.sizecode)]
+        self.code = [Instruction(file) for _ in range(self.sizecode)]
 
     def __str__(self) -> str:
-        return '\n'.join(f"\t{pc + 1}\t0x{code:08x}" for pc, code in enumerate(self.code))
+        return '\n'.join(f"\t{pc + 1}\t{code}" for pc, code in enumerate(self.code))
 
-class Constants(Binary):
+class Constants:
     sizek: int
     values: list[Value]
     sizep: int
@@ -135,7 +138,7 @@ class Constants(Binary):
 
         return '\n'.join(parts)
 
-class LocalVar(Binary):
+class LocalVar:
     name: String
     startpc: int
     endpc: int
@@ -148,7 +151,7 @@ class LocalVar(Binary):
     def __str__(self) -> str:
         return f"{self.name}\t{self.startpc + 1}\t{self.endpc + 1}"
 
-class Debug(Binary):
+class Debug:
     sizelineinfo: int
     lineinfo: list[int]
     sizelocvars: int
@@ -174,14 +177,14 @@ class Debug(Binary):
 
         return '\n'.join(parts)
 
-class Function(Binary):
+class Function:
     source: String
     type: str = "main"
     linedefined: int
     lastlinedefined: int
     nups: int
     numparams: int
-    is_vararg: int
+    is_vararg: bool
     maxstacksize: int
     code: Code
     constants: Constants
@@ -194,10 +197,10 @@ class Function(Binary):
             self.type = "function"
         self.linedefined = file.read_uint32()
         self.lastlinedefined = file.read_uint32()
-        self.nups = file.read_byte()
-        self.numparams = file.read_byte()
-        self.is_vararg = file.read_byte()
-        self.maxstacksize = file.read_byte()
+        self.nups = file.read_uint8()
+        self.numparams = file.read_uint8()
+        self.is_vararg = file.read_uint8() != 0
+        self.maxstacksize = file.read_uint8()
         self.code = Code(file)
         self.constants = Constants(file, str(self.source))
         self.debug = Debug(file)
@@ -213,7 +216,7 @@ class Function(Binary):
 
         return '\n' + '\n'.join(parts)
 
-class PyLua(Binary):
+class PyLua:
     reader: Reader
     header: Header
     main: Function
