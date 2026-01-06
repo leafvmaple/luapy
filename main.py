@@ -208,7 +208,7 @@ class Function:
     def __str__(self) -> str:
         parts = []
         parts.append(f"{self.type} <{self.source}:{self.linedefined},{self.lastlinedefined}> ({self.code.sizecode} instructions)")
-        parts.append(f"{self.numparams} params, {self.debug.sizeupvalues} upvalues, {self.debug.sizelocvars} locals, {self.constants.sizek} constants, {self.constants.sizep} functions")
+        parts.append(f"{self.numparams} params, {self.maxstacksize} slots, {self.debug.sizeupvalues} upvalues, {self.debug.sizelocvars} locals, {self.constants.sizek} constants, {self.constants.sizep} functions")
         parts.append(str(self.code))
         parts.append(str(self.constants))
         parts.append(str(self.debug))
