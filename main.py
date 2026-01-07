@@ -9,6 +9,78 @@ LUA_TBOOLEAN = 1
 LUA_TNUMBER = 3
 LUA_TSTRING = 4
 
+# Lua 5.1 opcodes
+OPCODES = [
+    "MOVE", "LOADK", "LOADBOOL", "LOADNIL", "GETUPVAL",
+    "GETGLOBAL", "GETTABLE", "SETGLOBAL", "SETUPVAL", "SETTABLE",
+    "NEWTABLE", "SELF", "ADD", "SUB", "MUL",
+    "DIV", "MOD", "POW", "UNM", "NOT",
+    "LEN", "CONCAT", "JMP", "EQ", "LT",
+    "LE", "TEST", "TESTSET", "CALL", "TAILCALL",
+    "RETURN", "FORLOOP", "FORPREP", "TFORLOOP", "SETLIST",
+    "CLOSE", "CLOSURE", "VARARG"
+]
+
+# Instruction formats
+# iABC: A:8 C:9 B:9 OP:6
+# iABx: A:8 Bx:18 OP:6
+# iAsBx: A:8 sBx:18 OP:6
+OpArgN = 0  # argument is not used
+OpArgU = 1  # argument is used
+OpArgR = 2  # argument is a register or a jump offset
+OpArgK = 3  # argument is a constant or register/constant
+
+class OpMode:
+    def __init__(self, t, a, b, c, mode):
+        self.testflag = t  # operator is a test (next instruction must be a jump)
+        self.setareg = a   # instruction set register A
+        self.argb = b      # B arg mode
+        self.argc = c      # C arg mode
+        self.mode = mode   # op mode (iABC, iABx, iAsBx)
+
+# OpMode(testflag, setareg, argb, argc, mode)
+# mode: 0=iABC, 1=iABx, 2=iAsBx
+OPMODES = [
+    OpMode(0, 1, OpArgR, OpArgN, 0),  # MOVE
+    OpMode(0, 1, OpArgK, OpArgN, 1),  # LOADK
+    OpMode(0, 1, OpArgU, OpArgU, 0),  # LOADBOOL
+    OpMode(0, 1, OpArgU, OpArgN, 0),  # LOADNIL
+    OpMode(0, 1, OpArgU, OpArgN, 0),  # GETUPVAL
+    OpMode(0, 1, OpArgK, OpArgN, 1),  # GETGLOBAL
+    OpMode(0, 1, OpArgR, OpArgK, 0),  # GETTABLE
+    OpMode(0, 0, OpArgK, OpArgN, 1),  # SETGLOBAL
+    OpMode(0, 0, OpArgU, OpArgN, 0),  # SETUPVAL
+    OpMode(0, 0, OpArgK, OpArgK, 0),  # SETTABLE
+    OpMode(0, 1, OpArgU, OpArgU, 0),  # NEWTABLE
+    OpMode(0, 1, OpArgR, OpArgK, 0),  # SELF
+    OpMode(0, 1, OpArgK, OpArgK, 0),  # ADD
+    OpMode(0, 1, OpArgK, OpArgK, 0),  # SUB
+    OpMode(0, 1, OpArgK, OpArgK, 0),  # MUL
+    OpMode(0, 1, OpArgK, OpArgK, 0),  # DIV
+    OpMode(0, 1, OpArgK, OpArgK, 0),  # MOD
+    OpMode(0, 1, OpArgK, OpArgK, 0),  # POW
+    OpMode(0, 1, OpArgR, OpArgN, 0),  # UNM
+    OpMode(0, 1, OpArgR, OpArgN, 0),  # NOT
+    OpMode(0, 1, OpArgR, OpArgN, 0),  # LEN
+    OpMode(0, 1, OpArgR, OpArgR, 0),  # CONCAT
+    OpMode(0, 0, OpArgR, OpArgN, 2),  # JMP
+    OpMode(1, 0, OpArgK, OpArgK, 0),  # EQ
+    OpMode(1, 0, OpArgK, OpArgK, 0),  # LT
+    OpMode(1, 0, OpArgK, OpArgK, 0),  # LE
+    OpMode(1, 0, OpArgN, OpArgU, 0),  # TEST
+    OpMode(1, 1, OpArgR, OpArgU, 0),  # TESTSET
+    OpMode(0, 1, OpArgU, OpArgU, 0),  # CALL
+    OpMode(0, 1, OpArgU, OpArgU, 0),  # TAILCALL
+    OpMode(0, 0, OpArgU, OpArgN, 0),  # RETURN
+    OpMode(0, 1, OpArgR, OpArgN, 2),  # FORLOOP
+    OpMode(0, 1, OpArgR, OpArgN, 2),  # FORPREP
+    OpMode(0, 0, OpArgN, OpArgU, 0),  # TFORLOOP
+    OpMode(0, 0, OpArgU, OpArgU, 0),  # SETLIST
+    OpMode(0, 0, OpArgN, OpArgN, 0),  # CLOSE
+    OpMode(0, 1, OpArgU, OpArgN, 1),  # CLOSURE
+    OpMode(0, 1, OpArgU, OpArgN, 0),  # VARARG
+]
+
 class Reader:
     def __init__(self, file: BinaryIO):
         self.file = file
@@ -59,7 +131,6 @@ class Header:
         self.number_len = file.read_uint8()
         self.number_is_int = (file.read_uint8() != 0)
 
-
 class String:
     size: int
     value: str
@@ -100,30 +171,87 @@ class Value:
         return str(self.value)
 
 class Instruction:
-    _instruction: int
+    instruction: int
+
+    _opcode: int
+    _opname: int
+    _args: list[int]
+    _comment: Optional[str]
 
     def __init__(self, file: Reader):
-        self._instruction = file.read_uint32()
+        self._args = []
+        self._comment = None
 
-    def __str__(self):
-        return f"0x{self._instruction:08x}"
+        self.instruction = file.read_uint32()
+        # Decode instruction
+        self._opcode = self.instruction & 0x3F  # bits 0-5
+        A = (self.instruction >> 6) & 0xFF  # bits 6-13
+        C = (self.instruction >> 14) & 0x1FF  # bits 14-22
+        B = (self.instruction >> 23) & 0x1FF  # bits 23-31
+        Bx = (self.instruction >> 14) & 0x3FFFF  # bits 14-31
+        sBx = Bx - 131071  # signed Bx
+
+        self._opname = OPCODES[self._opcode]
+        mode = OPMODES[self._opcode]
+
+        self._args.append(A)
+        if mode.mode == 0:  # iABC
+            self._append_arg(mode.argb, B)
+            self._append_arg(mode.argc, C)
+        elif mode.mode == 1:  # iABx
+            if self._opname in ["LOADK", "GETGLOBAL", "SETGLOBAL"]:
+                self._args.append(-(Bx + 1))
+            else:
+                self._args.append(Bx)
+        elif mode.mode == 2:  # iAsBx
+            self._args.append(sBx)
+
+    def _append_arg(self, arg_type: int, value: int):
+        """Get argument representation based on its type."""
+        if arg_type != OpArgK:
+            if arg_type == OpArgK and value > 255:
+                value = 255 - value
+            self._args.append(value)
+
+    def update_info(self, constants: list[Value], upvalues: list[String]):
+        """Update instruction arguments with constant/upvalue info."""
+        for arg in self._args:
+            if arg < 0:
+                self._comment = str(constants[-(arg + 1)])
+
+        # Special handling for specific opcodes
+        if self._opname == "GETUPVAL" or self._opname == "SETUPVAL":
+            if self._args[1] < len(upvalues):
+                self._comment = str(upvalues[self._args[1]])
+    
+    def __str__(self) -> str:
+        parts = [self._opname.ljust(10)]
+        parts.append(f"{self._args[0]} {self._args[1]}")
+        if self._comment is not None:
+            parts.append(f"; {self._comment}")
+
+        return '\t'.join(parts)
 
 class Code:
     sizecode: int
-    code: list[int]
+    codes: list[Instruction]
     
     def __init__(self, file: Reader):
         self.sizecode = file.read_uint32()
-        self.code = [Instruction(file) for _ in range(self.sizecode)]
+        self.codes = [Instruction(file) for _ in range(self.sizecode)]
+
+    def update_info(self, constants: list[Value], upvalues: list[String]):
+        for code in self.codes:
+            code.update_info(constants, upvalues)
 
     def __str__(self) -> str:
-        return '\n'.join(f"\t{pc + 1}\t{code}" for pc, code in enumerate(self.code))
+        return '\n'.join(f"\t{pc + 1}\t{code}" for pc, code in enumerate(self.codes))
 
 class Constants:
     sizek: int
     values: list[Value]
     sizep: int
-    subfunctions: list['Function']
+    subfunctions: list[Function]
 
     def __init__(self, file: Reader, source: str):
         self.sizek = file.read_uint32()
@@ -204,6 +332,8 @@ class Function:
         self.code = Code(file)
         self.constants = Constants(file, str(self.source))
         self.debug = Debug(file)
+
+        self.code.update_info(self.constants.values, self.debug.upvalue_names)
 
     def __str__(self) -> str:
         parts = []
