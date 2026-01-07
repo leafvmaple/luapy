@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-import struct
-from typing import Any, BinaryIO, Optional
-
-# Lua bytecode constant types
-LUA_TNIL = 0
-LUA_TBOOLEAN = 1
-LUA_TNUMBER = 3
-LUA_TSTRING = 4
+from typing import Optional
+from lua_io import Reader
+from lua_types import String, Value
+from lua_utils import toboolean
 
 # Lua 5.1 opcodes
 OPCODES = [
@@ -81,32 +77,6 @@ OPMODES = [
     OpMode(0, 1, OpArgU, OpArgN, 0),  # VARARG
 ]
 
-class Reader:
-    def __init__(self, file: BinaryIO):
-        self.file = file
-
-    def read_bytes(self, n: int) -> bytes:
-        data = self.file.read(n)
-        if len(data) != n:
-            raise EOFError("Unexpected end of file")
-        return data
-    
-    def read_uint8(self) -> int:
-        """Read a single unsigned byte."""
-        return struct.unpack('B', self.read_bytes(1))[0]
-    
-    def read_uint32(self) -> int:
-        """Read an unsigned 32-bit integer."""
-        return struct.unpack('I', self.read_bytes(4))[0]
-    
-    def read_uint64(self) -> int:
-        """Read an unsigned 64-bit integer."""
-        return struct.unpack('Q', self.read_bytes(8))[0]
-    
-    def read_double(self) -> float:
-        """Read a double-precision float."""
-        return struct.unpack('d', self.read_bytes(8))[0]
-
 class Header:
     signature: bytes
     version: int
@@ -130,45 +100,6 @@ class Header:
         self.inst_len = file.read_uint8()
         self.number_len = file.read_uint8()
         self.number_is_int = (file.read_uint8() != 0)
-
-class String:
-    size: int
-    value: str
-    
-    def __init__(self, file: Reader):
-        self.size = file.read_uint64()
-        self.value = file.read_bytes(self.size)[:-1].decode('utf-8') if self.size > 0 else ""
-
-    def __str__(self) -> str:
-        return self.value
-
-class Value:
-    type: int
-    value: Any
-    
-    def __init__(self, file: Reader):
-        self.type = file.read_uint8()
-        if self.type == LUA_TNIL:
-            self.value = None
-        elif self.type == LUA_TBOOLEAN:
-            self.value = file.read_uint8() != 0
-        elif self.type == LUA_TNUMBER:
-            self.value = file.read_double()
-        elif self.type == LUA_TSTRING:
-            self.value = String(file)
-        else:
-            raise ValueError(f"Unknown constant type: {self.type}")
-        
-    def __str__(self) -> str:
-        if self.type == LUA_TNIL:
-            return 'nil'
-        elif self.type == LUA_TBOOLEAN:
-            return 'true' if self.value else 'false'
-        elif self.type == LUA_TNUMBER:
-            return str(self.value)
-        elif self.type == LUA_TSTRING:
-            return f'"{self.value}"'
-        return str(self.value)
 
 class Instruction:
     instruction: int
@@ -345,6 +276,32 @@ class Function:
         parts.extend(str(sub) for sub in self.constants.subfunctions)
 
         return '\n' + '\n'.join(parts)
+
+class LuaState:
+    stack: list[Value]
+
+    def __init__(self):
+        self.stack = []
+
+    def gettop(self) -> int:
+        return len(self.stack)
+    
+    def pop(self, n: int = 1):
+        for _ in range(n):
+            self.stack.pop()
+    
+    def copy(self, src: int, desc: int):
+        self.stack[desc] = self.stack[src]
+
+    def pushvalue(self, idx: int):
+        self.stack.append(self.stack[idx])
+
+    def type(self, idx: int) -> int:
+        return self.stack[idx].type
+    
+    def toboolean(self, idx: int) -> bool:
+        value = self.stack[idx]
+        return toboolean(value)
 
 class PyLua:
     reader: Reader
