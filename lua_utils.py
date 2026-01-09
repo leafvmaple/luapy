@@ -1,4 +1,5 @@
-from lua_types import LUA_TYPE, Value
+from lua_types import Value
+
 
 def to_boolean(value: Value) -> bool:
     if value.is_nil():

@@ -28,13 +28,15 @@ OpArgU = 1  # argument is used
 OpArgR = 2  # argument is a register or a jump offset
 OpArgK = 3  # argument is a constant or register/constant
 
+
 class OpMode:
-    def __init__(self, t, a, b, c, mode, func = None):
+    def __init__(self, t, a, b, c, mode):
         self.testflag = t  # operator is a test (next instruction must be a jump)
         self.setareg = a   # instruction set register A
         self.argb = b      # B arg mode
         self.argc = c      # C arg mode
         self.mode = mode   # op mode (iABC, iABx, iAsBx)
+
 
 # OpMode(testflag, setareg, argb, argc, mode)
 # mode: 0=iABC, 1=iABx, 2=iAsBx
@@ -79,6 +81,7 @@ OPMODES = [
     OpMode(0, 1, OpArgU, OpArgN, 0),  # VARARG
 ]
 
+
 class Instruction:
     instruction: int
 
@@ -98,28 +101,6 @@ class Instruction:
         self._comment = None
 
         self.instruction = file.read_uint32()
-        # Decode instruction
-        self._opcode = self.instruction & 0x3F  # bits 0-5
-        self._a = (self.instruction >> 6) & 0xFF  # bits 6-13
-        self._b = (self.instruction >> 14) & 0x1FF  # bits 14-22
-        self._c = (self.instruction >> 23) & 0x1FF  # bits 23-31
-        self._bx = (self.instruction >> 14) & 0x3FFFF  # bits 14-31
-        self._sbx = self._bx - 131071  # signed Bx
-
-        self._opname = OPCODES[self._opcode]
-        mode = OPMODES[self._opcode]
-
-        self._args.append(self._a)
-        if mode.mode == 0:  # iABC
-            self._append_arg(mode.argb, self._b)
-            self._append_arg(mode.argc, self._c)
-        elif mode.mode == 1:  # iABx
-            if self._opname in ["LOADK", "GETGLOBAL", "SETGLOBAL"]:
-                self._args.append(-(self._bx + 1))
-            else:
-                self._args.append(self._bx)
-        elif mode.mode == 2:  # iAsBx
-            self._args.append(self._sbx)
 
     def op_name(self) -> str:
         return self._opname
@@ -128,24 +109,46 @@ class Instruction:
         """Return A, B, C arguments, with None as default for missing values."""
         return self._a, self._b, self._c
 
-    def bx(self) -> int:
-        return self._bx
-    
-    def sbx(self) -> int:
-        return self._sbx
+    def abx(self) -> tuple[int, int]:
+        return self._a, self._bx
 
-    def _append_arg(self, arg_type: int, value: int):
+    def asbx(self) -> tuple[int, int]:
+        return self._a, self._sbx
+
+    def _append_arg(self, arg_type: int, value: int, constants: list[Value]):
         """Get argument representation based on its type."""
         if arg_type != OpArgN:
             if arg_type == OpArgK and value > 255:
+                self._comment = str(constants[value - 256])
                 value = 255 - value
             self._args.append(value)
 
-    def update_info(self, constants: list[Value], upvalues: list[str]):
+    def update_info(self, pc, constants: list[Value], upvalues: list[str]):
         """Update instruction arguments with constant/upvalue info."""
-        for arg in self._args:
-            if arg < 0:
-                self._comment = str(constants[-(arg + 1)])
+        # Decode instruction
+        self._opcode = self.instruction & 0x3F  # bits 0-5
+        self._a = (self.instruction >> 6) & 0xFF  # bits 6-13
+        self._c = (self.instruction >> 14) & 0x1FF  # bits 14-22
+        self._b = (self.instruction >> 23) & 0x1FF  # bits 23-31
+        self._bx = (self.instruction >> 14) & 0x3FFFF  # bits 14-31
+        self._sbx = self._bx - 131071  # signed Bx
+
+        self._opname = OPCODES[self._opcode]
+        mode = OPMODES[self._opcode]
+
+        self._args.append(self._a)
+        if mode.mode == 0:  # iABC
+            self._append_arg(mode.argb, self._b, constants)
+            self._append_arg(mode.argc, self._c, constants)
+        elif mode.mode == 1:  # iABx
+            if self._opname in ["LOADK", "GETGLOBAL", "SETGLOBAL"]:
+                self._comment = str(constants[self._bx])
+                self._args.append(-(self._bx + 1))
+            else:
+                self._args.append(self._bx)
+        elif mode.mode == 2:  # iAsBx
+            self._args.append(self._sbx)
+            self._comment = f"to {self._sbx + pc + 2}"
 
         # Special handling for specific opcodes
         if self._opname == "GETUPVAL" or self._opname == "SETUPVAL":
@@ -154,11 +157,12 @@ class Instruction:
     
     def __str__(self) -> str:
         parts = [self._opname.ljust(10)]
-        parts.append(f"{self._args[0]} {self._args[1]}")
+        parts.append(' '.join(str(arg) for arg in self._args))
         if self._comment is not None:
             parts.append(f"; {self._comment}")
 
         return '\t'.join(parts)
+
 
 class LUA_TYPE(Enum):
     NIL = 0
@@ -170,6 +174,7 @@ class LUA_TYPE(Enum):
     FUNCTION = 6
     USERDATA = 7
     THREAD = 8
+
 
 class Value:
     value: Union[str, float, int, bool, None] = None
@@ -274,6 +279,7 @@ class LocalVar:
     def __str__(self) -> str:
         return f"{self.name}\t{self.startpc + 1}\t{self.endpc + 1}"
 
+
 class Debug:
     lineinfos: list[int]
     locvars: list[LocalVar]
@@ -296,6 +302,7 @@ class Debug:
         parts.extend(f"\t{i}\t{value}" for i, value in enumerate(self.upvalues))
 
         return '\n'.join(parts)
+
 
 class Function:
     source: str
@@ -329,14 +336,14 @@ class Function:
 
         # Constants
         sizek = file.read_uint32()
-        self.values = [Value(file= file) for _ in range(sizek)]
+        self.values = [Value(file=file) for _ in range(sizek)]
         sizep = file.read_uint32()
         self.subfunctions = [Function(file, self.source) for _ in range(sizep)]
 
         self.debug = Debug(file)
 
-        for code in self.codes:
-            code.update_info(self.values, self.debug.upvalues)
+        for pc, code in enumerate(self.codes):
+            code.update_info(pc, self.values, self.debug.upvalues)
 
     def __str__(self) -> str:
         parts = []
