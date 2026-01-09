@@ -26,3 +26,11 @@ class Reader:
     def read_double(self) -> float:
         """Read a double-precision float."""
         return struct.unpack('d', self.read_bytes(8))[0]
+        
+    def read_string(self) -> str:
+        length = self.read_uint64()
+        if length == 0:
+            return ""
+        string_bytes = self.read_bytes(length - 1)  # Exclude null terminator
+        self.read_bytes(1)  # Read and discard null terminator
+        return string_bytes.decode('utf-8')

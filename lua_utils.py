@@ -1,8 +1,8 @@
 from lua_types import LUA_TYPE, Value
 
-def toboolean(value: Value) -> bool:
-    if value.type == LUA_TYPE.NIL:
+def to_boolean(value: Value) -> bool:
+    if value.is_nil():
         return False
-    if value.type == LUA_TYPE.BOOLEAN:
+    if value.is_boolean():
         return value.value
     return True
