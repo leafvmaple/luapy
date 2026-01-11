@@ -1,10 +1,34 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Union
 from typing import Optional
 
 from lua_io import Reader
+
+
+class Header:
+    signature: bytes
+    version: int
+    format: int
+    endianness: int
+    int_len: int
+    size_len: int
+    inst_len: int
+    number_len: int
+    number_is_int: bool
+
+    def __init__(self, file: Reader):
+        self.signature = file.read_bytes(4)
+        if self.signature != b'\x1bLua':
+            raise ValueError("Not a valid Lua bytecode file")
+        self.version = file.read_uint8()
+        self.format = file.read_uint8()
+        self.endianness = file.read_uint8()
+        self.int_len = file.read_uint8()
+        self.size_len = file.read_uint8()
+        self.inst_len = file.read_uint8()
+        self.number_len = file.read_uint8()
+        self.number_is_int = (file.read_uint8() != 0)
 
 
 # Lua 5.1 opcodes
@@ -94,11 +118,11 @@ class Instruction:
     _sbx: int
 
     _args: list[int]
-    _comment: Optional[str]
+    _comment: list[str]
 
     def __init__(self, file: Reader):
         self._args = []
-        self._comment = None
+        self._comment = []
 
         self.instruction = file.read_uint32()
 
@@ -119,7 +143,7 @@ class Instruction:
         """Get argument representation based on its type."""
         if arg_type != OpArgN:
             if arg_type == OpArgK and value > 255:
-                self._comment = str(constants[value - 256])
+                self._comment.append(str(constants[value - 256]))
                 value = 255 - value
             self._args.append(value)
 
@@ -142,24 +166,24 @@ class Instruction:
             self._append_arg(mode.argc, self._c, constants)
         elif mode.mode == 1:  # iABx
             if self._opname in ["LOADK", "GETGLOBAL", "SETGLOBAL"]:
-                self._comment = str(constants[self._bx])
+                self._comment.append(str(constants[self._bx]))
                 self._args.append(-(self._bx + 1))
             else:
                 self._args.append(self._bx)
         elif mode.mode == 2:  # iAsBx
             self._args.append(self._sbx)
-            self._comment = f"to {self._sbx + pc + 2}"
+            self._comment.append(f"to {self._sbx + pc + 2}")
 
         # Special handling for specific opcodes
         if self._opname == "GETUPVAL" or self._opname == "SETUPVAL":
             if self._args[1] < len(upvalues):
-                self._comment = upvalues[self._args[1]]
-    
+                self._comment.append(upvalues[self._args[1]])
+
     def __str__(self) -> str:
         parts = [self._opname.ljust(10)]
         parts.append(' '.join(str(arg) for arg in self._args))
-        if self._comment is not None:
-            parts.append(f"; {self._comment}")
+        if len(self._comment) > 0:
+            parts.append(f"; {' '.join(self._comment)}")
 
         return '\t'.join(parts)
 
@@ -177,9 +201,9 @@ class LUA_TYPE(Enum):
 
 
 class Value:
-    value: Union[str, float, int, bool, None] = None
-    
-    def __init__(self, value: Union[str, float, int, bool, None] = None, file: Reader = None):
+    value: str | float | int | bool | Table | LClosure | None = None
+
+    def __init__(self, value: str | float | int | bool | Table | LClosure | None = None, file: Reader = None):
         if value is not None:
             self.value = value
         elif file is not None:
@@ -203,24 +227,34 @@ class Value:
         if self.is_number():
             self.value = str(self.value)
 
-    def to_number(self):
+    def string_to_number(self):
         if self.is_string():
             self.value = float(self.value)
             if self.value.is_integer():
                 self.value = int(self.value)
-    
+
+    def float_to_integer(self):
+        if type(self.value) is float and self.value.is_integer():
+            self.value = int(self.value)
+
     def is_nil(self) -> bool:
         return self.value is None
-    
+
     def is_boolean(self) -> bool:
         return type(self.value) is bool
-    
+
     def is_number(self) -> bool:
-        return isinstance(self.value, (int, float))
-    
+        return type(self.value) in (int, float)
+
     def is_string(self) -> bool:
         return type(self.value) is str
-    
+
+    def is_table(self) -> bool:
+        return type(self.value) is Table
+
+    def is_function(self) -> bool:
+        return type(self.value) in (LClosure, PClosure)
+
     def type_name(self) -> str:
         if self.is_nil():
             return 'nil'
@@ -230,8 +264,40 @@ class Value:
             return 'number'
         elif self.is_string():
             return 'string'
+        elif self.is_table():
+            return 'table'
+        elif self.is_function():
+            return 'function'
         return 'unknown'
-        
+
+    def to_boolean(self) -> bool:
+        if self.is_nil():
+            return False
+        if self.is_boolean():
+            return self.value
+        return True
+
+    def get_integer(self) -> int | None:
+        if type(self.value) is int:
+            return self.value
+        if type(self.value) is float:
+            if self.value.is_integer():
+                return int(self.value)
+        return None
+
+    def get_string(self) -> Optional[str]:
+        if self.is_number():
+            return str(self.value)
+        if self.is_string():
+            return self.value
+        return None
+
+    def __hash__(self):
+        return hash(self.value)
+
+    def __eq__(self, other: Value) -> bool:
+        return self.value == other.value
+
     def __str__(self) -> str:
         if self.is_nil():
             return 'nil'
@@ -239,43 +305,74 @@ class Value:
             return 'true' if self.value else 'false'
         elif self.is_string():
             return f'"{self.value}"'
+        elif self.is_table():
+            return 'table'
+        elif self.is_function():
+            return 'function'
         return str(self.value)
-    
 
-class Header:
-    signature: bytes
-    version: int
-    format: int
-    endianness: int
-    int_len: int
-    size_len: int
-    inst_len: int
-    number_len: int
-    number_is_int: bool
-    
-    def __init__(self, file: Reader):
-        self.signature = file.read_bytes(4)
-        if self.signature != b'\x1bLua':
-            raise ValueError("Not a valid Lua bytecode file")
-        self.version = file.read_uint8()
-        self.format = file.read_uint8()
-        self.endianness = file.read_uint8()
-        self.int_len = file.read_uint8()
-        self.size_len = file.read_uint8()
-        self.inst_len = file.read_uint8()
-        self.number_len = file.read_uint8()
-        self.number_is_int = (file.read_uint8() != 0)
+
+class Table:
+    _list: list[Value]
+    _map: dict[Value | int, Value]
+
+    def __init__(self):
+        self._list = []
+        self._map = {}
+
+    def get(self, key: int | Value) -> Optional[Value]:
+        int_key = key.get_integer() if type(key) is Value else key
+        if int_key is not None:
+            if 1 <= int_key <= len(self._list):
+                return self._list[int_key - 1]
+            return self._map.get(int_key, None)
+        return self._map.get(key, None)
+
+    def set(self, key: int | Value, value: Value):
+        int_key = key.get_integer() if type(key) is Value else key
+        if value.is_nil():
+            if int_key is not None:
+                if 1 <= int_key <= len(self._list):
+                    self._shrink_list(int_key)
+            elif key in self._map:
+                del self._map[key]
+        else:
+            if int_key is not None:
+                if int_key == len(self._list) + 1:
+                    self._list.append(value)
+                    self._expand_list()
+                elif 1 <= int_key <= len(self._list):
+                    self._list[int_key - 1] = value
+                else:
+                    self._map[int_key] = value
+            else:
+                self._map[key] = value
+
+    def len(self) -> int:
+        return len(self._list)
+
+    def _shrink_list(self, key: int):
+        for lua_idx in range(key + 1, len(self._list) + 1):
+            self._map[lua_idx] = self._list[lua_idx - 1]
+        self._list = self._list[:key - 1]
+
+    def _expand_list(self):
+        while (len(self._list) + 1) in self._map:
+            key = len(self._list) + 1
+            self._list.append(self._map[key])
+            del self._map[key]
+
 
 class LocalVar:
     name: str
     startpc: int
     endpc: int
-    
+
     def __init__(self, file: Reader):
         self.name = file.read_string()
         self.startpc = file.read_uint32()
         self.endpc = file.read_uint32()
-    
+
     def __str__(self) -> str:
         return f"{self.name}\t{self.startpc + 1}\t{self.endpc + 1}"
 
@@ -284,7 +381,7 @@ class Debug:
     lineinfos: list[int]
     locvars: list[LocalVar]
     upvalues: list[str]
-    
+
     def __init__(self, file: Reader):
         sizelineinfo = file.read_uint32()
         self.lineinfos = [file.read_uint32() for _ in range(sizelineinfo)]
@@ -304,7 +401,7 @@ class Debug:
         return '\n'.join(parts)
 
 
-class Function:
+class Proto:
     source: str
     type: str = "main"
     linedefined: int
@@ -314,10 +411,10 @@ class Function:
     is_vararg: bool
     maxstacksize: int
     codes: list[Instruction]
-    values: list[Value]
-    subfunctions: list[Function]
+    consts: list[Value]
+    protos: list[Proto]
     debug: Debug
-    
+
     def __init__(self, file: Reader, parent: Optional[str] = None):
         self.source = file.read_string()
         if parent is not None:
@@ -329,30 +426,70 @@ class Function:
         self.numparams = file.read_uint8()
         self.is_vararg = file.read_uint8() != 0
         self.maxstacksize = file.read_uint8()
-        
+
         # Code
         sizecode = file.read_uint32()
         self.codes = [Instruction(file) for _ in range(sizecode)]
 
         # Constants
         sizek = file.read_uint32()
-        self.values = [Value(file=file) for _ in range(sizek)]
+        self.consts = [Value(file=file) for _ in range(sizek)]
         sizep = file.read_uint32()
-        self.subfunctions = [Function(file, self.source) for _ in range(sizep)]
+        self.protos = [Proto(file, self.source) for _ in range(sizep)]
 
         self.debug = Debug(file)
 
         for pc, code in enumerate(self.codes):
-            code.update_info(pc, self.values, self.debug.upvalues)
+            code.update_info(pc, self.consts, self.debug.upvalues)
 
     def __str__(self) -> str:
         parts = []
         parts.append(f"{self.type} <{self.source}:{self.linedefined},{self.lastlinedefined}> ({len(self.codes)} instructions)")
-        parts.append(f"{self.numparams} params, {self.maxstacksize} slots, {len(self.debug.upvalues)} upvalues, {len(self.debug.locvars)} locals, {len(self.values)} constants, {len(self.subfunctions)} functions")
+        parts.append(f"{self.numparams} params, {self.maxstacksize} slots, {len(self.debug.upvalues)} upvalues, \
+                     {len(self.debug.locvars)} locals, {len(self.consts)} constants, {len(self.protos)} functions")
         parts.extend(f"\t{pc + 1}\t{code}" for pc, code in enumerate(self.codes))
-        parts.append(f'constants ({len(self.values)}):')
-        parts.extend(f"\t{i + 1}\t{value}" for i, value in enumerate(self.values))
+        parts.append(f'constants ({len(self.consts)}):')
+        parts.extend(f"\t{i + 1}\t{value}" for i, value in enumerate(self.consts))
         parts.append(str(self.debug))
-        parts.extend(str(sub) for sub in self.subfunctions)
+        parts.extend(str(sub) for sub in self.protos)
 
         return '\n' + '\n'.join(parts)
+
+
+class LClosure:
+    stack: list[Value]
+    varargs: list[Value]
+    func: Proto
+    nrets: int  # number of expected return values
+    ret_idx: int
+    pc: int
+
+    def __init__(self, func: Proto = None):
+        self.stack = [Value()] * func.maxstacksize
+        self.varargs = []
+        self.func = func
+        self.nrets = 0
+        self.ret_idx = 0
+        self.pc = 0
+
+    def fetch(self) -> Optional[Instruction]:
+        if self.pc >= len(self.func.codes):
+            return None
+        instrution = self.func.codes[self.pc]
+        self.pc += 1
+        return instrution
+
+    # debug
+    def print_stack(self):
+        pass
+        # print(f'{self.func.codes[self.pc - 1].op_name().ljust(10)}' + ''.join(f"[{v}]" for v in self.stack))
+
+
+class PClosure:
+    stack: list[Value]
+    func: callable
+
+    def __init__(self, func: callable):
+        self.func = func
+        self.stack = []
+        self.varargs = []

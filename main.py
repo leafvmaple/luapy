@@ -1,11 +1,20 @@
 from __future__ import annotations
 
-import inspect
 from typing import Optional
 from lua_io import Reader
-from lua_types import Instruction, Header, Function, Value
-from lua_utils import to_boolean
-from lua_maths import ARITHS, COMPARE
+from lua_types import LClosure, PClosure, Instruction, Header, Proto, Table, Value
+
+
+LUA_GLOBALS_INDEX = -10002
+
+
+def lua_print(state: LuaState) -> list[Value]:
+    n = state.get_top()
+    outputs = []
+    for i in range(n):
+        outputs.append(str(state.stack[i]))
+    print('\t'.join(outputs))
+    return []
 
 
 class Operator:
@@ -17,14 +26,14 @@ class Operator:
     @staticmethod
     def LOADK(inst: Instruction, state: LuaState):
         a, bx = inst.abx()
-        state.stack[a] = state.func.values[bx]
+        state.stack[a] = state.func.consts[bx]
 
     @staticmethod
     def LOADBOOL(inst: Instruction, state: LuaState):
         a, b, c = inst.abc()
         state.stack[a] = Value(value=bool(b))
         if c != 0:
-            state.pc += 1
+            state.call_info[-1].pc += 1
 
     @staticmethod
     def LOADNIL(inst: Instruction, state: LuaState):
@@ -42,13 +51,19 @@ class Operator:
     def GETGLOBAL(inst: Instruction, state: LuaState):
         a, bx = inst.abx()
         # Globals not implemented yet
-        state.stack[a] = Value()
+        name = state.func.consts[bx].value
+        state.stack[a] = state.get_global(name)
 
     @staticmethod
     def GETTABLE(inst: Instruction, state: LuaState):
         a, b, c = inst.abc()
-        # Tables not implemented yet
-        state.stack[a] = Value()
+        table_value = state.stack[b]
+        key = LuaVM.get_rk(state, c)
+        if table_value.is_table():
+            result = table_value.value.get(key)
+            state.stack[a] = result if result is not None else Value()
+        else:
+            raise TypeError("GETTABLE requires a table")
 
     @staticmethod
     def SETGLOBAL(inst: Instruction, state: LuaState):
@@ -65,14 +80,18 @@ class Operator:
     @staticmethod
     def SETTABLE(inst: Instruction, state: LuaState):
         a, b, c = inst.abc()
-        # Tables not implemented yet
-        pass
+        table_value = state.stack[a]
+        key = LuaVM.get_rk(state, b)
+        value = LuaVM.get_rk(state, c)
+        if table_value.is_table():
+            table_value.value.set(key, value)
+        else:
+            raise TypeError("SETTABLE requires a table")
 
     @staticmethod
     def NEWTABLE(inst: Instruction, state: LuaState):
-        a, b, c = inst.abc()
-        # Tables not implemented yet
-        state.stack[a] = Value()
+        a, _, _ = inst.abc()
+        state.stack[a] = Value(value=Table())
 
     @staticmethod
     def SELF(inst: Instruction, state: LuaState):
@@ -86,8 +105,8 @@ class Operator:
         a, b, c = inst.abc()
         vb = LuaVM.get_rk(state, b)
         vc = LuaVM.get_rk(state, c)
-        vb.to_number()
-        vc.to_number()
+        vb.string_to_number()
+        vc.string_to_number()
         if vb.is_number() and vc.is_number():
             state.stack[a] = Value(value=vb.value + vc.value)
         else:
@@ -98,8 +117,8 @@ class Operator:
         a, b, c = inst.abc()
         vb = LuaVM.get_rk(state, b)
         vc = LuaVM.get_rk(state, c)
-        vb.to_number()
-        vc.to_number()
+        vb.string_to_number()
+        vc.string_to_number()
         if vb.is_number() and vc.is_number():
             state.stack[a] = Value(value=vb.value - vc.value)
         else:
@@ -110,8 +129,8 @@ class Operator:
         a, b, c = inst.abc()
         vb = LuaVM.get_rk(state, b)
         vc = LuaVM.get_rk(state, c)
-        vb.to_number()
-        vc.to_number()
+        vb.string_to_number()
+        vc.string_to_number()
         if vb.is_number() and vc.is_number():
             state.stack[a] = Value(value=vb.value * vc.value)
         else:
@@ -122,8 +141,8 @@ class Operator:
         a, b, c = inst.abc()
         vb = LuaVM.get_rk(state, b)
         vc = LuaVM.get_rk(state, c)
-        vb.to_number()
-        vc.to_number()
+        vb.string_to_number()
+        vc.string_to_number()
         if vb.is_number() and vc.is_number():
             state.stack[a] = Value(value=vb.value / vc.value)
         else:
@@ -134,8 +153,8 @@ class Operator:
         a, b, c = inst.abc()
         vb = LuaVM.get_rk(state, b)
         vc = LuaVM.get_rk(state, c)
-        vb.to_number()
-        vc.to_number()
+        vb.string_to_number()
+        vc.string_to_number()
         if vb.is_number() and vc.is_number():
             state.stack[a] = Value(value=vb.value % vc.value)
         else:
@@ -146,8 +165,8 @@ class Operator:
         a, b, c = inst.abc()
         vb = LuaVM.get_rk(state, b)
         vc = LuaVM.get_rk(state, c)
-        vb.to_number()
-        vc.to_number()
+        vb.string_to_number()
+        vc.string_to_number()
         if vb.is_number() and vc.is_number():
             state.stack[a] = Value(value=vb.value ** vc.value)
         else:
@@ -157,7 +176,7 @@ class Operator:
     def UNM(inst: Instruction, state: LuaState):
         a, b, _ = inst.abc()
         vb = state.stack[b]
-        vb.to_number()
+        vb.string_to_number()
         if vb.is_number():
             state.stack[a] = Value(value=-vb.value)
         else:
@@ -167,7 +186,7 @@ class Operator:
     def NOT(inst: Instruction, state: LuaState):
         a, b, _ = inst.abc()
         vb = state.stack[b]
-        state.stack[a] = Value(value=not to_boolean(vb))
+        state.stack[a] = Value(value=not vb.to_boolean())
 
     @staticmethod
     def LEN(inst: Instruction, state: LuaState):
@@ -175,9 +194,10 @@ class Operator:
         vb = state.stack[b]
         if vb.is_string():
             state.stack[a] = Value(value=len(vb.value))
+        elif vb.is_table():
+            state.stack[a] = Value(value=vb.value.len())
         else:
-            # Tables not implemented yet
-            state.stack[a] = Value(value=0)
+            raise TypeError("LEN operand must be a string or table")
 
     @staticmethod
     def CONCAT(inst: Instruction, state: LuaState):
@@ -185,9 +205,9 @@ class Operator:
         strings = []
         for i in range(b, c + 1):
             v = state.stack[i]
-            v.to_string()
-            if v.is_string():
-                strings.append(v.value)
+            s = v.get_string()
+            if s:
+                strings.append(s)
             else:
                 raise TypeError("CONCAT operands must be strings or numbers")
         state.stack[a] = Value(value=''.join(strings))
@@ -195,7 +215,7 @@ class Operator:
     @staticmethod
     def JMP(inst: Instruction, state: LuaState):
         _, offset = inst.asbx()
-        state.pc += offset
+        state.jump(offset)
 
     @staticmethod
     def EQ(inst: Instruction, state: LuaState):
@@ -203,49 +223,62 @@ class Operator:
         vb = LuaVM.get_rk(state, b)
         vc = LuaVM.get_rk(state, c)
         if (vb.value == vc.value) != (a != 0):
-            state.pc += 1
+            state.jump(1)
 
     @staticmethod
     def LT(inst: Instruction, state: LuaState):
         a, b, c = inst.abc()
         vb = LuaVM.get_rk(state, b)
         vc = LuaVM.get_rk(state, c)
-        vb.to_number()
-        vc.to_number()
+        vb.string_to_number()
+        vc.string_to_number()
         if (vb.value < vc.value) != (a != 0):
-            state.pc += 1
+            state.jump(1)
 
     @staticmethod
     def LE(inst: Instruction, state: LuaState):
         a, b, c = inst.abc()
         vb = LuaVM.get_rk(state, b)
         vc = LuaVM.get_rk(state, c)
-        vb.to_number()
-        vc.to_number()
+        vb.string_to_number()
+        vc.string_to_number()
         if (vb.value <= vc.value) != (a != 0):
-            state.pc += 1
+            state.jump(1)
 
     @staticmethod
     def TEST(inst: Instruction, state: LuaState):
         a, _, c = inst.abc()
         va = state.stack[a]
-        if to_boolean(va) != (c != 0):
-            state.pc += 1
+        if va.to_boolean() != (c != 0):
+            state.jump(1)
 
     @staticmethod
     def TESTSET(inst: Instruction, state: LuaState):
         a, b, c = inst.abc()
         vb = state.stack[b]
-        if to_boolean(vb) == (c != 0):
+        if vb.to_boolean() == (c != 0):
             state.stack[a] = vb
         else:
-            state.pc += 1
+            state.jump(1)
 
     @staticmethod
     def CALL(inst: Instruction, state: LuaState):
         a, b, c = inst.abc()
-        # Function calls not implemented yet
-        pass
+        # a: 函数在栈中的位置
+        # b: 参数个数 + 1 (0表示从a+1到栈顶都是参数)
+        # c: 返回值个数 + 1 (0表示保留所有返回值)
+
+        func_value = state.stack[a]
+        if not func_value.is_function():
+            raise TypeError("CALL requires a function")
+        
+        nargs = b - 1 if b > 0 else len(state.stack) - a - 1
+
+        if type(func_value.value) is LClosure:
+            nargs = b - 1 if b > 0 else len(state.stack) - a - 1
+            state.prepare_call(func_value.value, a, nargs, c - 1)
+        else:
+            state.py_call(func_value.value, a, nargs, c - 1)
 
     @staticmethod
     def TAILCALL(inst: Instruction, state: LuaState):
@@ -256,8 +289,7 @@ class Operator:
     @staticmethod
     def RETURN(inst: Instruction, state: LuaState):
         a, b, _ = inst.abc()
-        # Return handling not implemented yet
-        pass
+        state.return_from_call(a, b - 1)
 
     @staticmethod
     def FORLOOP(inst: Instruction, state: LuaState):
@@ -266,9 +298,9 @@ class Operator:
         idx = state.stack[a]
         limit = state.stack[a + 1]
 
-        step.to_number()
-        idx.to_number()
-        limit.to_number()
+        step.string_to_number()
+        idx.string_to_number()
+        limit.string_to_number()
 
         if step.is_number() and idx.is_number() and limit.is_number():
             idx.value += step.value
@@ -276,7 +308,7 @@ class Operator:
 
             if (step.value > 0 and idx.value <= limit.value) or \
                (step.value <= 0 and idx.value >= limit.value):
-                state.pc += sbx
+                state.jump(sbx)
                 state.stack[a + 3] = idx
         else:
             raise TypeError("FORLOOP operands must be numbers")
@@ -287,12 +319,12 @@ class Operator:
         init = state.stack[a]
         step = state.stack[a + 2]
 
-        init.to_number()
-        step.to_number()
+        init.string_to_number()
+        step.string_to_number()
 
         if init.is_number() and step.is_number():
             state.stack[a] = Value(value=init.value - step.value)
-            state.pc += sbx
+            state.jump(sbx)
         else:
             raise TypeError("FORPREP operands must be numbers")
 
@@ -305,8 +337,29 @@ class Operator:
     @staticmethod
     def SETLIST(inst: Instruction, state: LuaState):
         a, b, c = inst.abc()
-        # Table list initialization not implemented yet
-        pass
+        table_value = state.stack[a]
+
+        if not table_value.is_table():
+            raise TypeError("SETLIST requires a table")
+
+        # LFIELDS_PER_FLUSH in Lua 5.1 is 50
+        LFIELDS_PER_FLUSH = 50
+
+        # If c == 0, the actual c value is in the next instruction
+        if c == 0:
+            c = state.fetch().instruction
+
+        # Calculate starting index: (c-1) * 50 + 1
+        idx = (c - 1) * LFIELDS_PER_FLUSH
+
+        # If b == 0, set all values from A+1 to top of stack
+        if b == 0:
+            b = len(state.stack) - a - 1
+
+        # Set values from stack[a+1] to stack[a+b] into table
+        for i in range(1, b + 1):
+            value = state.stack[a + i]
+            table_value.value.set(idx + i, value)
 
     @staticmethod
     def CLOSE(inst: Instruction, state: LuaState):
@@ -317,27 +370,38 @@ class Operator:
     @staticmethod
     def CLOSURE(inst: Instruction, state: LuaState):
         a, bx = inst.abx()
-        # Closures not implemented yet
-        state.stack[a] = Value()
+        # 获取子函数原型
+        proto = state.func.protos[bx]
+        # 创建闭包（暂时不处理upvalues）
+        state.stack[a] = Value(value=LClosure(proto))
 
     @staticmethod
     def VARARG(inst: Instruction, state: LuaState):
         a, b, _ = inst.abc()
-        # Varargs not implemented yet
-        if b > 1:
-            for i in range(b - 1):
-                state.stack[a + i] = Value()
+        varargs = state.call_info[-1].varargs
+        if b == 0:
+            b = len(varargs) + 1
+        for i in range(b - 1):
+            state.stack[a + i] = varargs[i]
 
 
 class LuaState:
+    call_info: list[LClosure | PClosure]
+    func: Proto
     stack: list[Value]
-    func: Function
-    pc: int
+    registry: Table
+    globals: Table
 
-    def __init__(self, func: Optional[Function] = None):
-        self.stack = [Value()] * func.maxstacksize if func is not None else []
-        self.func = func
-        self.pc = 0
+    def __init__(self, main: Proto):
+        self.call_info = [LClosure(main)]
+        self.registry = Table()
+        self.registry.set(Value(LUA_GLOBALS_INDEX), Value(value=Table()))
+        self.globals = self.registry.get(Value(LUA_GLOBALS_INDEX)).value
+
+        self.func = self.call_info[-1].func
+        self.stack = self.call_info[-1].stack
+
+        self.register("print", lua_print)
 
     def get_top(self) -> int:
         return len(self.stack)
@@ -348,125 +412,89 @@ class LuaState:
         while len(self.stack) < idx:
             self.stack.append(Value())
 
-    def push(self, value: Value):
-        self.stack.append(value)
+    def get_global(self, name: str) -> Value:
+        key = Value(value=name)
+        value = self.globals.get(key)
+        return value if value is not None else Value()
 
-    def pop(self, n: int = 1):
-        for _ in range(n):
-            self.stack.pop()
+    def set_global(self, name: str, value: Value):
+        key = Value(value=name)
+        self.globals.set(key, value)
 
-    def copy(self, src: int, desc: int):
-        self.stack[desc] = self.stack[src]
+    def push_closure(self, closure: LClosure | PClosure):
+        self.call_info.append(closure)
+        self.func = self.call_info[-1].func
+        self.stack = self.call_info[-1].stack
 
-    def replace(self, idx: int):
-        idx = self._abs_idx(idx)
-        self.stack[idx - 1] = self.stack.pop()
+    def pop_closure(self) -> LClosure:
+        frame = self.call_info.pop()
+        if len(self.call_info) > 0:
+            self.func = self.call_info[-1].func
+            self.stack = self.call_info[-1].stack
+        return frame
 
-    def push_value(self, idx: int):
-        idx = self._abs_idx(idx)
-        self.stack.append(self.stack[idx - 1])
+    def register(self, name: str, func: callable):
+        self.globals.set(Value(value=name), Value(value=PClosure(func)))
 
-    def typ_ename(self, idx: int) -> str:
-        return self.stack[idx - 1].type_name()
+    def prepare_call(self, closure: LClosure, func_idx: int = 0, args_count: int = 0, nrets: int = 0):
+        for i in range(args_count):
+            value = self.stack[func_idx + 1 + i]
+            if i < closure.func.numparams:
+                closure.stack[i] = value
+            else:
+                closure.varargs.append(value)
 
-    def to_boolean(self, idx: int) -> bool:
-        value = self.stack[idx - 1]
-        return to_boolean(value)
+        closure.nrets = nrets
+        closure.ret_idx = func_idx
+        self.push_closure(closure)
 
-    def to_number(self, idx: int) -> Optional[float]:
-        value = self.stack[idx - 1]
-        if value.is_number():
-            return value.value
-        return None
+    def py_call(self, closure: PClosure, func_idx: int = 0, args_count: int = 0, nrets: int = 0):
+        for i in range(args_count):
+            value = self.stack[func_idx + 1 + i]
+            closure.stack.append(value)
 
-    def to_string(self, idx: int) -> Optional[str]:
-        self.stack[idx - 1].to_string()
-        value = self.stack[idx - 1]
-        if value.is_string():
-            return value.value
-        return None
+        self.push_closure(closure)
+        rets = closure.func(self)
+        self.pop_closure()
 
-    def push_nil(self):
-        self.stack.append(Value())
+        ret_count = len(rets)
 
-    def push_boolean(self, b: bool):
-        self.stack.append(Value(value=b))
+        for i in range(nrets):
+            ret_value = rets[i] if i < ret_count else Value()
+            self.stack.append(ret_value)
 
-    def push_number(self, number: float):
-        self.stack.append(Value(value=number))
+    def return_from_call(self, ret_start, ret_count: int = 0):
+        closure = self.pop_closure()
 
-    def push_string(self, s: str):
-        self.stack.append(Value(value=s))
+        if len(self.call_info) == 0:
+            return
 
-    def arith(self, op: str):
-        operator = ARITHS[op]
-        num_params = len(inspect.signature(operator).parameters)
+        # Handle return values
+        if ret_count == -1:
+            ret_count = len(closure.stack) - ret_start
 
-        a = self.stack.pop()
-        a.to_number()
-        if not a.is_number():
-            raise TypeError("Operand must be a number")
-        if num_params == 1:
-            result = operator(a.value)
-        elif num_params == 2:
-            b = self.stack.pop()
-            b.to_number()
-            if not b.is_number():
-                raise TypeError("Both operands must be numbers")
-            result = operator(a.value, b.value)
+        for i in range(closure.nrets):
+            ret_value = closure.stack[ret_start + i] if i < ret_count else Value()
+            self.stack[closure.ret_idx + i] = ret_value
 
-        self.stack.append(Value(value=result))
+    def jump(self, offset: int):
+        self.call_info[-1].pc += offset
 
-    def compare(self, idx1: int, idx2: int, op: str) -> bool:
-        operator = COMPARE[op]
-        a = self.stack[idx1 - 1]
-        b = self.stack[idx2 - 1]
-        a.to_number()
-        b.to_number()
-        if not a.is_number() or not b.is_number():
-            raise TypeError("Both operands must be numbers")
-        return operator(a.value, b.value)
-
-    def len(self, idx: int):
-        value = self.stack[idx - 1]
-        if value.is_string():
-            length = len(value.value)
-            self.stack.append(Value(value=length))
-        else:
-            raise TypeError("Operand must be a string")
-
-    def concat(self, n: int):
-        if n == 0:
-            self.stack.append(Value(value=""))
-        elif n >= 2:
-            strings = []
-            for _ in range(n):
-                value = self.stack.pop()
-                value.to_string()
-                if not value.is_string():
-                    raise TypeError("All operands must be strings")
-                strings.append(value.value)
-            result = ''.join(reversed(strings))
-            self.stack.append(Value(value=result))
+    def fetch(self) -> Optional[Instruction]:
+        if len(self.call_info) == 0:
+            return None
+        return self.call_info[-1].fetch()
 
     # debug
     def print_stack(self):
-        print(f'{self.func.codes[self.pc - 1].op_name().ljust(10)}' + ''.join(f"[{v}]" for v in self.stack))
-
-    def _abs_idx(self, idx: int) -> int:
-        if idx >= 0:
-            return idx
-        return len(self.stack) + idx
+        pass
+        # self.call_info[-1].print_stack()
 
 
 class LuaVM:
     @staticmethod
     def fetch(state: LuaState) -> Optional[Instruction]:
-        if state.pc >= len(state.func.codes):
-            return None
-        instrution = state.func.codes[state.pc]
-        state.pc += 1
-        return instrution
+        return state.fetch()
 
     @staticmethod
     def excute(state: LuaState) -> bool:
@@ -477,6 +505,7 @@ class LuaVM:
         method = getattr(Operator, op_name, None)
         if method:
             method(inst, state)
+            print(f'{op_name.ljust(10)}' + ''.join(f"[{v}]" for v in state.stack))
         # else:
         #     raise NotImplementedError(f"Operator {op_name} not implemented")
         return True
@@ -486,7 +515,7 @@ class LuaVM:
         """Get RK value: if rk >= 256, it's a constant index; otherwise it's a register"""
         if rk >= 256:
             # It's a constant (k)
-            return state.func.values[rk - 256]
+            return state.func.consts[rk - 256]
         else:
             # It's a register (r)
             return state.stack[rk]
@@ -495,13 +524,13 @@ class LuaVM:
 class PyLua:
     reader: Reader
     header: Header
-    main: Function
+    main: Proto
 
     def __init__(self, file_path: str):
         with open(file_path, 'rb') as f:
             self.reader = Reader(f)
             self.header = Header(self.reader)
-            self.main = Function(self.reader)
+            self.main = Proto(self.reader)
 
     def __str__(self) -> str:
         return f"{self.main}"
@@ -514,3 +543,4 @@ if __name__ == "__main__":
     state = LuaState(pylua_file.main)
     while LuaVM.excute(state):
         state.print_stack()
+    pass
