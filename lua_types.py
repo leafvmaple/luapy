@@ -455,9 +455,11 @@ class Proto:
 
         return '\n' + '\n'.join(parts)
 
-
-class LClosure:
+class Closure:
     stack: list[Value]
+    upvalues: list[Value]
+
+class LClosure(Closure):
     varargs: list[Value]
     func: Proto
     nrets: int  # number of expected return values
@@ -466,6 +468,7 @@ class LClosure:
 
     def __init__(self, func: Proto = None):
         self.stack = [Value()] * func.maxstacksize
+        self.upvalues = [Value()] * func.nups  # Initialize upvalues based on function prototype
         self.varargs = []
         self.func = func
         self.nrets = 0
@@ -485,8 +488,7 @@ class LClosure:
         # print(f'{self.func.codes[self.pc - 1].op_name().ljust(10)}' + ''.join(f"[{v}]" for v in self.stack))
 
 
-class PClosure:
-    stack: list[Value]
+class PClosure(Closure):
     func: callable
 
     def __init__(self, func: callable):

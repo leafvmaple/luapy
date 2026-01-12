@@ -13,7 +13,7 @@ def lua_print(state: LuaState) -> list[Value]:
     outputs = []
     for i in range(n):
         outputs.append(str(state.stack[i]))
-    print('\t'.join(outputs))
+    print(','.join(outputs))
     return []
 
 
@@ -44,8 +44,11 @@ class Operator:
     @staticmethod
     def GETUPVAL(inst: Instruction, state: LuaState):
         a, b, _ = inst.abc()
-        # Upvalues not implemented yet
-        state.stack[a] = Value()
+        closure = state.call_info[-1]
+        if b < len(closure.upvalues):
+            state.stack[a] = closure.upvalues[b]
+        else:
+            state.stack[a] = Value()
 
     @staticmethod
     def GETGLOBAL(inst: Instruction, state: LuaState):
@@ -68,14 +71,15 @@ class Operator:
     @staticmethod
     def SETGLOBAL(inst: Instruction, state: LuaState):
         a, bx = inst.abx()
-        # Globals not implemented yet
-        pass
+        name = state.func.consts[bx].value
+        state.set_global(name, state.stack[a])
 
     @staticmethod
     def SETUPVAL(inst: Instruction, state: LuaState):
         a, b, _ = inst.abc()
-        # Upvalues not implemented yet
-        pass
+        closure = state.call_info[-1]
+        if b < len(closure.upvalues):
+            closure.upvalues[b] = state.stack[a]
 
     @staticmethod
     def SETTABLE(inst: Instruction, state: LuaState):
@@ -370,10 +374,18 @@ class Operator:
     @staticmethod
     def CLOSURE(inst: Instruction, state: LuaState):
         a, bx = inst.abx()
-        # 获取子函数原型
         proto = state.func.protos[bx]
-        # 创建闭包（暂时不处理upvalues）
         state.stack[a] = Value(value=LClosure(proto))
+        closure = state.stack[a].value
+        for i in range(proto.nups):
+            upval_inst = state.fetch()
+            _, upval_b, _ = upval_inst.abc()
+            if upval_inst.op_name() == "GETUPVAL":
+                closure.upvalues[i] = state.call_info[-1].upvalues[upval_b]
+            elif upval_inst.op_name() == "MOVE":
+                closure.upvalues[i] = state.stack[upval_b]
+            else:
+                raise ValueError("Invalid upvalue instruction")
 
     @staticmethod
     def VARARG(inst: Instruction, state: LuaState):
@@ -437,6 +449,9 @@ class LuaState:
         self.globals.set(Value(value=name), Value(value=PClosure(func)))
 
     def prepare_call(self, closure: LClosure, func_idx: int = 0, args_count: int = 0, nrets: int = 0):
+        closure.stack = [Value()] * closure.func.maxstacksize
+        closure.pc = 0
+        closure.varargs = []
         for i in range(args_count):
             value = self.stack[func_idx + 1 + i]
             if i < closure.func.numparams:
@@ -449,6 +464,7 @@ class LuaState:
         self.push_closure(closure)
 
     def py_call(self, closure: PClosure, func_idx: int = 0, args_count: int = 0, nrets: int = 0):
+        closure.stack = []
         for i in range(args_count):
             value = self.stack[func_idx + 1 + i]
             closure.stack.append(value)
@@ -472,6 +488,9 @@ class LuaState:
         # Handle return values
         if ret_count == -1:
             ret_count = len(closure.stack) - ret_start
+
+        if closure.nrets == -1:
+            closure.nrets = ret_count
 
         for i in range(closure.nrets):
             ret_value = closure.stack[ret_start + i] if i < ret_count else Value()
@@ -505,7 +524,7 @@ class LuaVM:
         method = getattr(Operator, op_name, None)
         if method:
             method(inst, state)
-            print(f'{op_name.ljust(10)}' + ''.join(f"[{v}]" for v in state.stack))
+            print(str(inst).ljust(40) + ''.join(f"[{v}]" for v in state.stack))
         # else:
         #     raise NotImplementedError(f"Operator {op_name} not implemented")
         return True
