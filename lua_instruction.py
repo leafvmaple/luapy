@@ -1,7 +1,6 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
-from lua_io import Reader
 if TYPE_CHECKING:
     from lua_value import Value
 
@@ -82,20 +81,6 @@ class Instruction:
     _sbx: int
     _args: list[int]
     _comment: list[str]
-
-    def __init__(self, file: Reader):
-        self._args = []
-        self._comment = []
-
-        self.instruction = file.read_uint32()
-        # Decode instruction
-        self._opcode_idx = self.instruction & 0x3F  # bits 0-5
-        self._opcode = OPCODES[self._opcode_idx]
-        self._a = (self.instruction >> 6) & 0xFF  # bits 6-13
-        self._c = (self.instruction >> 14) & 0x1FF  # bits 14-22
-        self._b = (self.instruction >> 23) & 0x1FF  # bits 23-31
-        self._bx = (self.instruction >> 14) & 0x3FFFF  # bits 14-31
-        self._sbx = self._bx - (0x3FFFF >> 1)  # signed Bx (convert 18-bit unsigned to signed)
 
     def op_name(self) -> str:
         return self._opcode.name

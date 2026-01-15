@@ -41,7 +41,7 @@ def lua_ipairsaux(state: LuaState) -> int:
     next_index = index.value + 1
     value = table.value.get(next_index)
     if value is not None:
-        state.pushvalue(Value(next_index))
+        state.pushvalue(Value.number(next_index))
         state.pushvalue(value)
         return 2
     else:
@@ -64,7 +64,7 @@ def lua_ipairs(state: LuaState) -> int:
         raise TypeError("ipairs expects a table")
     state.pushpyfunction(lua_ipairsaux)
     state.pushvalue(table)
-    state.pushvalue(Value(0))
+    state.pushvalue(Value.number(0))
     return 3
 
 

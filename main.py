@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from lua_io import Reader
-from lua_header import Header
+from lua_bin import read_header, read_proto
 from lua_function import Proto
 from lua_state import LuaState
 from lua_operator import Operator
@@ -39,8 +39,8 @@ class PyLua:
     def __init__(self, file_path: str):
         with open(file_path, 'rb') as f:
             self.reader = Reader(f)
-            self.header = Header(self.reader)
-            self.main = Proto(self.reader)
+            self.header = read_header(self.reader)
+            self.main = read_proto(self.reader)
 
     def __str__(self) -> str:
         return f"{self.main}"

@@ -3,10 +3,12 @@ from __future__ import annotations
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from lua_io import Reader
 from lua_protocols import LuaCallable
 from lua_table import Table
 from lua_function import LClosure, PClosure
+
+if TYPE_CHECKING:
+    from lua_io import Reader
 
 
 class LUA_TYPE(Enum):
@@ -24,13 +26,40 @@ class LUA_TYPE(Enum):
 class Value:
     value: str | float | int | bool | Table | LClosure | None = None
 
-    def __init__(self, value: str | float | int | bool | Table | LClosure | None = None, file: Reader = None):
+    def __init__(self, value: str | float | int | bool | Table | LClosure | None = None):
         if value is not None:
             self.value = value
-        elif file is not None:
-            self.__read(file)
-
         self.conv_float_to_int()
+    
+    @classmethod
+    def nil(cls) -> Value:
+        """Create a nil value"""
+        return cls(None)
+    
+    @classmethod
+    def boolean(cls, val: bool) -> Value:
+        """Create a boolean value"""
+        return cls(val)
+    
+    @classmethod
+    def number(cls, val: int | float) -> Value:
+        """Create a number value"""
+        return cls(val)
+    
+    @classmethod
+    def string(cls, val: str) -> Value:
+        """Create a string value"""
+        return cls(val)
+    
+    @classmethod
+    def table(cls, val: Table) -> Value:
+        """Create a table value"""
+        return cls(val)
+    
+    @classmethod
+    def closure(cls, val: LClosure | PClosure) -> Value:
+        """Create a closure value"""
+        return cls(val)
 
     def conv_number_to_str(self):
         if self.is_number():
@@ -111,7 +140,7 @@ class Value:
             return value
             
         mt = self.get_metatable()
-        index = mt.get(Value("__index")) if mt else None
+        index = mt.get(Value.string("__index")) if mt else None
         if index:
             if index.is_function():
                 assert caller is not None, "__index metamethod requires a caller"
@@ -122,7 +151,7 @@ class Value:
     
     def len(self, caller: LuaCallable | None = None) -> int:
         mt = self.get_metatable()
-        length = mt.get(Value("__len")) if mt else None
+        length = mt.get(Value.string("__len")) if mt else None
         if length and length.is_function():
             assert caller is not None, "__len metamethod requires a caller"
             result = caller(length.value, self)
@@ -135,19 +164,6 @@ class Value:
             return len(self.value)
         return 0
     
-    def __read(self, file: Reader = None):
-        _type = LUA_TYPE(file.read_uint8())
-        if _type == LUA_TYPE.NIL:
-            self.value = None
-        elif _type == LUA_TYPE.BOOLEAN:
-            self.value = file.read_uint8() != 0
-        elif _type == LUA_TYPE.NUMBER:
-            self.value = file.read_double()
-        elif _type == LUA_TYPE.STRING:
-            self.value = file.read_string()
-        else:
-            raise ValueError(f"Unknown constant type: {_type}")
-
     def __hash__(self):
         return hash(self.value)
 

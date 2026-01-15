@@ -48,21 +48,21 @@ class ArithOperator:
         mt = va.get_metatable()
         if b is None:
             if self.check.check(va) is not None:
-                return Value(value=self.op(va.value))
+                return Value.number(self.op(va.value))
             else:
                 if mt:
-                    meta_func = mt.get(Value(self.meta))
+                    meta_func = mt.get(Value.string(self.meta))
                     if meta_func and meta_func.is_function():
                         return L._luacall(meta_func.value, va)
         else:
             vb = L._get_rk(b)
             if self.check.checks(va, vb):
-                return Value(value=self.op(va.value, vb.value))
+                return Value.number(self.op(va.value, vb.value))
             else:
                 if mt is None:
                     mt = vb.get_metatable()
                 if mt:
-                    meta_func = mt.get(Value(self.meta))
+                    meta_func = mt.get(Value.string(self.meta))
                     if meta_func and meta_func.is_function():
                         return L._luacall(meta_func.value, va, vb)
         return False
@@ -109,7 +109,7 @@ class Operator:
     @staticmethod
     def LOADBOOL(inst: Instruction, state: LuaState):
         a, b, c = inst.abc()
-        state.stack[a] = Value(value=bool(b))
+        state.stack[a] = Value.boolean(bool(b))
         if c != 0:
             state.call_info[-1].pc += 1
 
@@ -117,7 +117,7 @@ class Operator:
     def LOADNIL(inst: Instruction, state: LuaState):
         a, b, _ = inst.abc()
         for i in range(a, b + 1):
-            state.stack[i] = Value()
+            state.stack[i] = Value.nil()
 
     @staticmethod
     def GETUPVAL(inst: Instruction, state: LuaState):
@@ -126,7 +126,7 @@ class Operator:
         if b < len(closure.upvalues):
             state.stack[a] = closure.upvalues[b]
         else:
-            state.stack[a] = Value()
+            state.stack[a] = Value.nil()
 
     @staticmethod
     def GETGLOBAL(inst: Instruction, state: LuaState):
@@ -141,9 +141,9 @@ class Operator:
         key = state._get_rk(c)
         if table_value.is_table():
             result = state.gettable(b, key)
-            state.stack[a] = result if result is not None else Value()
+            state.stack[a] = result if result is not None else Value.nil()
         else:
-            state.stack[a] = Value()
+            state.stack[a] = Value.nil()
 
     @staticmethod
     def SETGLOBAL(inst: Instruction, state: LuaState):
@@ -170,7 +170,7 @@ class Operator:
     @staticmethod
     def NEWTABLE(inst: Instruction, state: LuaState):
         a, _, _ = inst.abc()
-        state.stack[a] = Value(value=Table())
+        state.stack[a] = Value.table(Table())
 
     @staticmethod
     def SELF(inst: Instruction, state: LuaState):
@@ -178,7 +178,7 @@ class Operator:
         state.stack[a + 1] = state.stack[b]
         key = state._get_rk(c)
         result = state.gettable(b, key)
-        state.stack[a] = result if result is not None else Value()
+        state.stack[a] = result if result is not None else Value.nil()
 
     @staticmethod
     def ADD(inst: Instruction, state: LuaState):
@@ -218,12 +218,12 @@ class Operator:
     @staticmethod
     def NOT(inst: Instruction, state: LuaState):
         a, b, _ = inst.abc()
-        state.stack[a] = Value(value=not state.stack[b].get_boolean())
+        state.stack[a] = Value.boolean(not state.stack[b].get_boolean())
 
     @staticmethod
     def LEN(inst: Instruction, state: LuaState):
         a, b, _ = inst.abc()
-        state.stack[a] = Value(state.len(b))
+        state.stack[a] = Value.number(state.len(b))
 
     @staticmethod
     def CONCAT(inst: Instruction, state: LuaState):
@@ -234,7 +234,7 @@ class Operator:
             val.conv_number_to_str()
             if val.is_string():
                 result += val.value
-        state.stack[a] = Value(value=result)
+        state.stack[a] = Value.string(result)
 
     @staticmethod
     def JMP(inst: Instruction, state: LuaState):
@@ -355,8 +355,8 @@ class Operator:
     def CLOSURE(inst: Instruction, state: LuaState):
         a, bx = inst.abx()
         proto = state.func.protos[bx]
-        closure = LClosure(proto)
-        state.stack[a] = Value(value=closure)
+        closure = LClosure.from_proto(proto)
+        state.stack[a] = Value.closure(closure)
 
     @staticmethod
     def VARARG(inst: Instruction, state: LuaState):
@@ -367,4 +367,4 @@ class Operator:
             if i < len(closure.varargs):
                 state.stack[a + i] = closure.varargs[i]
             else:
-                state.stack[a + i] = Value()
+                state.stack[a + i] = Value.nil()

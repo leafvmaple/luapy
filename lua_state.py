@@ -6,6 +6,7 @@ from lua_instruction import Instruction
 from lua_value import Value
 from lua_table import Table
 from lua_function import LClosure, PClosure, Proto
+from lua_bin import read_proto
 from lua_builtins import lua_print, lua_getmetatable, lua_setmetatable, lua_next, lua_ipairs, lua_pairs
 
 LUA_GLOBALS_INDEX = -10002
@@ -22,7 +23,7 @@ class LuaState:
     mt: Table
 
     def __init__(self, main: Proto):
-        self.call_info = [LClosure(main)]
+        self.call_info = [LClosure.from_proto(main)]  # Pass Value as factory
         self.registry = Table()
         self.registry.set(Value(LUA_GLOBALS_INDEX), Value(value=Table()))
         self.globals = self.registry.get(Value(LUA_GLOBALS_INDEX)).value
@@ -46,15 +47,15 @@ class LuaState:
         while len(self.stack) > idx:
             self.stack.pop()
         while len(self.stack) < idx:
-            self.stack.append(Value())
+            self.stack.append(Value.nil())
 
     def get_global(self, name: str) -> Value:
-        key = Value(value=name)
+        key = Value.string(name)
         value = self.globals.get(key)
-        return value if value is not None else Value()
+        return value if value is not None else Value.nil()
 
     def set_global(self, name: str, value: Value):
-        key = Value(value=name)
+        key = Value.string(name)
         self.globals.set(key, value)
 
     def push_closure(self, closure: LClosure | PClosure):
@@ -70,12 +71,12 @@ class LuaState:
         return frame
 
     def register(self, name: str, func: callable):
-        self.globals.set(Value(value=name), Value(value=PClosure(func)))
+        self.globals.set(Value.string(name), Value.closure(PClosure(func)))
 
     def getmetatable(self, idx: int):
         obj = self.stack[idx]
         mt = obj.get_metatable()
-        return mt if mt is not None else self.mt.get(Value(obj.type_name()))
+        return mt if mt is not None else self.mt.get(Value.string(obj.type_name()))
 
     def setmetatable(self, idx: int):
         obj = self.stack[idx]
@@ -84,7 +85,7 @@ class LuaState:
         if obj.is_table():
             obj.value.setmetatable(mt.value)
         else:
-            self.mt.set(Value(obj.type_name()), mt)
+            self.mt.set(Value.string(obj.type_name()), mt)
 
     def gettable(self, idx: int, key: Value) -> Value:
         t = self.stack[idx]
@@ -127,7 +128,7 @@ class LuaState:
         return True
 
     def precall(self, closure: LClosure, func_idx: int = 0, nargs: int = 0, nrets: int = 0):
-        closure.stack = [Value()] * closure.func.maxstacksize
+        closure.stack = [Value.nil()] * closure.func.maxstacksize
         closure.pc = 0
         closure.varargs = []
         for i in range(nargs):
@@ -154,7 +155,7 @@ class LuaState:
         ret_start = len(closure.stack) - ret_count
 
         for i in range(nrets):
-            ret_value = closure.stack[ret_start + i] if i < ret_count else Value()
+            ret_value = closure.stack[ret_start + i] if i < ret_count else Value.nil()
             self.stack[func_idx + i] = ret_value
 
     def poscall(self, ret_start, ret_count: int = 0):
@@ -168,7 +169,7 @@ class LuaState:
             closure.nrets = ret_count
 
         for i in range(closure.nrets):
-            ret_value = closure.stack[ret_start + i] if i < ret_count else Value()
+            ret_value = closure.stack[ret_start + i] if i < ret_count else Value.nil()
             self.stack[closure.ret_idx + i] = ret_value
 
     def next(self, idx: int) -> Optional[tuple[Value, Value]]:
@@ -179,18 +180,18 @@ class LuaState:
         return table.value.next(key)
 
     def pushpyfunction(self, func: callable):
-        self.stack.append(Value(value=PClosure(func)))
+        self.stack.append(Value.closure(PClosure(func)))
 
     def pushvalue(self, val: Value):
         self.stack.append(val)
 
     def pushnil(self):
-        self.stack.append(Value())
+        self.stack.append(Value.nil())
 
     def _luacall(self, func, *args) -> Value:
         nargs = len(args)
         func_idx = len(self.stack)
-        self.stack.append(Value(value=func))
+        self.stack.append(Value.closure(func))
         self.stack.extend(args)
         self.call(func_idx, nargs, 1)
         res = self.stack[func_idx]

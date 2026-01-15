@@ -15,8 +15,8 @@ class Table:
         self._list = []
         self._map = {}
 
-    def get(self, key: int | Value) -> Optional[Value]:
-        int_key = key.get_integer() if type(key).__name__ == 'Value' else key
+    def get(self, key: int | Value) -> Value | None:
+        int_key = key if type(key) is int else key.get_integer()
         if int_key is not None:
             if 1 <= int_key <= len(self._list):
                 return self._list[int_key - 1]
@@ -24,7 +24,7 @@ class Table:
         return self._map.get(key, None)
 
     def set(self, key: int | Value, value: Value):
-        int_key = key.get_integer() if type(key).__name__ == 'Value' else key
+        int_key = key if type(key) is int else key.get_integer()
         if value.is_nil():
             if int_key is not None:
                 if 1 <= int_key <= len(self._list):
@@ -76,7 +76,7 @@ class Table:
     def setmetatable(self, metatable: Table):
         self._metatable = metatable
 
-    def getmetatable(self) -> Optional[Table]:
+    def getmetatable(self) -> Table | None:
         return self._metatable
 
     def _shrink_list(self, key: int):
@@ -90,5 +90,5 @@ class Table:
             self._list.append(self._map[key])
             del self._map[key]
 
-    def gettable(self, key: str) -> Optional[Value]:
+    def gettable(self, key: str) -> Value | None:
         return self.get(Value(key))
