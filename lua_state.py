@@ -6,8 +6,7 @@ from lua_instruction import Instruction
 from lua_value import Value
 from lua_table import Table
 from lua_function import LClosure, PClosure, Proto
-from lua_bin import read_proto
-from lua_builtins import lua_print, lua_getmetatable, lua_setmetatable, lua_next, lua_ipairs, lua_pairs
+from lua_builtins import BUILTIN
 
 LUA_GLOBALS_INDEX = -10002
 
@@ -25,20 +24,23 @@ class LuaState:
     def __init__(self, main: Proto):
         self.call_info = [LClosure.from_proto(main)]  # Pass Value as factory
         self.registry = Table()
-        self.registry.set(Value(LUA_GLOBALS_INDEX), Value(value=Table()))
-        self.globals = self.registry.get(Value(LUA_GLOBALS_INDEX)).value
+        key = Value.number(LUA_GLOBALS_INDEX)
+        self.registry.set(key, Value.table(Table()))
+        self.globals = self.registry.get(key).value
         self.mt = Table()
 
         self.func = self.call_info[-1].func
         self.stack = self.call_info[-1].stack
 
         # Register built-in functions
-        self.register("print", lua_print)
-        self.register("getmetatable", lua_getmetatable)
-        self.register("setmetatable", lua_setmetatable)
-        self.register("next", lua_next)
-        self.register("ipairs", lua_ipairs)
-        self.register("pairs", lua_pairs)
+        self.register("print", BUILTIN.lua_print)
+        self.register("getmetatable", BUILTIN.lua_getmetatable)
+        self.register("setmetatable", BUILTIN.lua_setmetatable)
+        self.register("next", BUILTIN.lua_next)
+        self.register("ipairs", BUILTIN.lua_ipairs)
+        self.register("pairs", BUILTIN.lua_pairs)
+        self.register("error", BUILTIN.lua_error)
+        self.register("pcall", BUILTIN.lua_pcall)
 
     def get_top(self) -> int:
         return len(self.stack)
@@ -112,6 +114,22 @@ class LuaState:
                 self.stack[idx] = self._luacall(func_value.value, *self.stack[idx: idx + nargs + 1])
         else:
             raise TypeError("CALL error")
+        
+    def pcall(self, idx: int, nargs: int, nrets: int):
+        ci_len = len(self.call_info)
+        try:
+            self.call(idx, nargs, nrets)
+        except Exception as e:
+            while len(self.call_info) > ci_len:
+                self.pop_closure()
+            self.stack.clear()
+            self.pushvalue(Value.string(str(e)))
+            return False
+        return True
+        
+    def error(self):
+        value = self.stack[-1]
+        raise RuntimeError(value.value)
 
     def excute(self) -> bool:
         inst = self.fetch()
@@ -184,6 +202,10 @@ class LuaState:
 
     def pushvalue(self, val: Value):
         self.stack.append(val)
+
+    def insert(self, idx: int):
+        val = self.stack.pop()
+        self.stack.insert(idx - 1, val)
 
     def pushnil(self):
         self.stack.append(Value.nil())

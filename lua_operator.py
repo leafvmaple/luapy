@@ -71,6 +71,8 @@ class ArithOperator:
         res = self.solve(L, a, b)
         if res:
             L.stack[idx] = res
+        else:
+            raise TypeError("arithmetic error")
 
     def compare(self, L: LuaState, a: int, b: int) -> bool:
         res = self.solve(L, a, b)
@@ -245,7 +247,8 @@ class Operator:
     def EQ(inst: Instruction, state: LuaState):
         a, b, c = inst.abc()
         if ARITH["EQ"].compare(state, b, c) == (a != 0):
-            state.jump(1)
+            inst = state.fetch(); assert inst.op_name() == "JMP"
+            Operator.JMP(inst, state)
         else:
             state.call_info[-1].pc += 1
 
@@ -253,7 +256,8 @@ class Operator:
     def LT(inst: Instruction, state: LuaState):
         a, b, c = inst.abc()
         if ARITH["LT"].compare(state, b, c) == (a != 0):
-            state.jump(1)
+            inst = state.fetch(); assert inst.op_name() == "JMP"
+            Operator.JMP(inst, state)
         else:
             state.call_info[-1].pc += 1
 
@@ -261,7 +265,8 @@ class Operator:
     def LE(inst: Instruction, state: LuaState):
         a, b, c = inst.abc()
         if ARITH["LE"].compare(state, b, c) == (a != 0):
-            state.jump(1)
+            inst = state.fetch(); assert inst.op_name() == "JMP"
+            Operator.JMP(inst, state)
         else:
             state.call_info[-1].pc += 1
 
