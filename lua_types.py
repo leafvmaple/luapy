@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
+from typing import Optional, Callable
 
 from lua_io import Reader
 
@@ -125,6 +125,15 @@ class Instruction:
         self._comment = []
 
         self.instruction = file.read_uint32()
+        # Decode instruction
+        self._opcode = self.instruction & 0x3F  # bits 0-5
+        self._a = (self.instruction >> 6) & 0xFF  # bits 6-13
+        self._c = (self.instruction >> 14) & 0x1FF  # bits 14-22
+        self._b = (self.instruction >> 23) & 0x1FF  # bits 23-31
+        self._bx = (self.instruction >> 14) & 0x3FFFF  # bits 14-31
+        self._sbx = self._bx - 131071  # signed Bx
+
+        self._opname = OPCODES[self._opcode]
 
     def op_name(self) -> str:
         return self._opname
@@ -149,15 +158,6 @@ class Instruction:
 
     def update_info(self, pc, constants: list[Value], upvalues: list[str]):
         """Update instruction arguments with constant/upvalue info."""
-        # Decode instruction
-        self._opcode = self.instruction & 0x3F  # bits 0-5
-        self._a = (self.instruction >> 6) & 0xFF  # bits 6-13
-        self._c = (self.instruction >> 14) & 0x1FF  # bits 14-22
-        self._b = (self.instruction >> 23) & 0x1FF  # bits 23-31
-        self._bx = (self.instruction >> 14) & 0x3FFFF  # bits 14-31
-        self._sbx = self._bx - 131071  # signed Bx
-
-        self._opname = OPCODES[self._opcode]
         mode = OPMODES[self._opcode]
 
         self._args.append(self._a)
@@ -207,33 +207,20 @@ class Value:
         if value is not None:
             self.value = value
         elif file is not None:
-            _type = LUA_TYPE(file.read_uint8())
-            if _type == LUA_TYPE.NIL:
-                self.value = None
-            elif _type == LUA_TYPE.BOOLEAN:
-                self.value = file.read_uint8() != 0
-            elif _type == LUA_TYPE.NUMBER:
-                self.value = file.read_double()
-            elif _type == LUA_TYPE.STRING:
-                self.value = file.read_string()
-            else:
-                raise ValueError(f"Unknown constant type: {_type}")
+            self.__read(file)
 
-        if isinstance(self.value, float):
-            if self.value.is_integer():
-                self.value = int(self.value)
+        self.conv_float_to_int()
 
-    def to_string(self):
+    def conv_number_to_str(self):
         if self.is_number():
             self.value = str(self.value)
 
-    def string_to_number(self):
+    def conv_str_to_number(self):
         if self.is_string():
             self.value = float(self.value)
-            if self.value.is_integer():
-                self.value = int(self.value)
+            self.conv_float_to_int()
 
-    def float_to_integer(self):
+    def conv_float_to_int(self):
         if type(self.value) is float and self.value.is_integer():
             self.value = int(self.value)
 
@@ -270,7 +257,7 @@ class Value:
             return 'function'
         return 'unknown'
 
-    def to_boolean(self) -> bool:
+    def get_boolean(self) -> bool:
         if self.is_nil():
             return False
         if self.is_boolean():
@@ -285,12 +272,56 @@ class Value:
                 return int(self.value)
         return None
 
-    def get_string(self) -> Optional[str]:
+    def get_string(self) -> str | None:
         if self.is_number():
             return str(self.value)
         if self.is_string():
             return self.value
         return None
+    
+    def get_metatable(self) -> Table | None:
+        if self.is_table():
+            return self.value.getmetatable()
+        return None
+    
+    def gettable(self, key: Value, call: Callable[..., Value] | None = None) -> Value | None:
+        value = self.value.gettable(key) if self.is_table() else None
+        if value:
+            return value
+        mt = self.get_metatable()
+        index = mt.get(Value("__index")) if mt else None
+        if index:
+            if index.is_function() and call:
+                return call(index.value, self, key)
+            if index.is_table():
+                return index.gettable(key)
+        return None
+    
+    def len(self, call: Callable[..., Value] | None = None) -> int:
+        mt = self.get_metatable()
+        length = mt.get(Value("__len")) if mt else None
+        if length and length.is_function() and call:
+            result = call(length.value, self)
+            return result.get_integer()
+        
+        if self.is_table():
+            return self.value.len()
+        if self.is_string():
+            return len(self.value)
+        return 0
+    
+    def __read(self, file: Reader = None):
+        _type = LUA_TYPE(file.read_uint8())
+        if _type == LUA_TYPE.NIL:
+            self.value = None
+        elif _type == LUA_TYPE.BOOLEAN:
+            self.value = file.read_uint8() != 0
+        elif _type == LUA_TYPE.NUMBER:
+            self.value = file.read_double()
+        elif _type == LUA_TYPE.STRING:
+            self.value = file.read_string()
+        else:
+            raise ValueError(f"Unknown constant type: {_type}")
 
     def __hash__(self):
         return hash(self.value)
@@ -298,7 +329,7 @@ class Value:
     def __eq__(self, other: Value) -> bool:
         return self.value == other.value
 
-    def __str__(self) -> str:
+    def __repr__(self) -> str:
         if self.is_nil():
             return 'nil'
         elif self.is_boolean():
@@ -313,6 +344,7 @@ class Value:
 
 
 class Table:
+    _metatable: Table | None = None
     _list: list[Value]
     _map: dict[Value | int, Value]
 
@@ -350,6 +382,39 @@ class Table:
 
     def len(self) -> int:
         return len(self._list)
+    
+    def next(self, key: Value) -> tuple[Value, Value] | None:
+        if key.is_nil():
+            if len(self._list) > 0:
+                return Value(1), self._list[0]
+            for k in self._map:
+                return k, self._map[k]
+            return None
+        
+        int_key = key.get_integer()
+        if int_key is not None:
+            return self._list_next(int_key) or self._map_next(int_key)
+        return self._map_next(key)
+    
+    def _list_next(self, key: int) -> tuple[Value, Value] | None:
+        if key < len(self._list):
+            return Value(key + 1), self._list[key]
+        return None
+    
+    def _map_next(self, key: Value | int) -> tuple[Value, Value] | None:
+        found = False
+        for k in self._map:
+            if found:
+                return k, self._map[k]
+            if k == key:
+                found = True
+        return None
+    
+    def setmetatable(self, metatable: Table):
+        self._metatable = metatable
+
+    def getmetatable(self) -> Optional[Table]:
+        return self._metatable
 
     def _shrink_list(self, key: int):
         for lua_idx in range(key + 1, len(self._list) + 1):
@@ -362,6 +427,8 @@ class Table:
             self._list.append(self._map[key])
             del self._map[key]
 
+    def gettable(self, key: str) -> Optional[Value]:
+        return self.get(Value(key))
 
 class LocalVar:
     name: str
@@ -415,7 +482,10 @@ class Proto:
     protos: list[Proto]
     debug: Debug
 
-    def __init__(self, file: Reader, parent: Optional[str] = None):
+    def __init__(self, file: Reader, parent: str | None = None):
+        self.__read(file, parent)
+
+    def __read(self, file: Reader, parent: str | None = None):
         self.source = file.read_string()
         if parent is not None:
             self.source = parent  # type: ignore
@@ -472,10 +542,9 @@ class LClosure(Closure):
         self.varargs = []
         self.func = func
         self.nrets = 0
-        self.ret_idx = 0
         self.pc = 0
 
-    def fetch(self) -> Optional[Instruction]:
+    def fetch(self) -> Instruction | None:
         if self.pc >= len(self.func.codes):
             return None
         instrution = self.func.codes[self.pc]
@@ -494,4 +563,4 @@ class PClosure(Closure):
     def __init__(self, func: callable):
         self.func = func
         self.stack = []
-        self.varargs = []
+        self.upvalues = []

@@ -8,14 +8,123 @@ from lua_types import LClosure, PClosure, Instruction, Header, Proto, Table, Val
 LUA_GLOBALS_INDEX = -10002
 
 
-def lua_print(state: LuaState) -> list[Value]:
+class CheckNumber:
+    @staticmethod
+    def check(val: Value) -> bool:
+        val.conv_str_to_number()
+        if val.is_number():
+            return True
+        return False
+    
+    def checks(va: Value, vb: Value) -> bool:
+        return CheckNumber.check(va) and CheckNumber.check(vb)
+    
+class CompareCheck:
+    @staticmethod
+    def checks(va: Value, vb: Value) -> bool:
+        if va.is_number() and vb.is_number():
+            return True
+        if va.is_string() and vb.is_string():
+            return True
+        return False
+
+class ArithOperator:
+    op: callable
+    check: CheckNumber
+    meta: str
+
+    def __init__(self, op: callable, check: CheckNumber, meta: str):
+        self.op = op
+        self.meta = meta
+        self.check = check
+
+    def solve(self, L: LuaState, a: int, b: Optional[int] = None) -> Value | bool:
+        va = L._get_rk(a)
+        mt = va.get_metatable()
+        if b is None:
+            if self.check.check(va) is not None:
+                return Value(value=self.op(va.value))
+            else:
+                if mt:
+                    meta_func = mt.get(Value(self.meta))
+                    if meta_func and meta_func.is_function():
+                        return L._luacall(meta_func.value, va)
+        else:
+            vb = L._get_rk(b)
+            if self.check.checks(va, vb):
+                return Value(value=self.op(va.value, vb.value))
+            else:
+                if mt is None:
+                    mt = vb.get_metatable()
+                if mt:
+                    meta_func = mt.get(Value(self.meta))
+                    if meta_func and meta_func.is_function():
+                        return L._luacall(meta_func.value, va, vb)
+        return False
+
+    def arith(self, L: LuaState, idx: int, a: int, b: Optional[int] = None):
+        res = self.solve(L, a, b)
+        if res:
+            L.stack[idx] = res
+
+    def compare(self, L: LuaState, a: int, b: int) -> bool:
+        res = self.solve(L, a, b)
+        if type(res) is Value and res.is_boolean():
+            return res.value
+        return False
+
+
+ARITH = {
+    "ADD": ArithOperator(lambda a, b: a + b , CheckNumber, "__add"),
+    "SUB": ArithOperator(lambda a, b: a - b , CheckNumber, "__sub"),
+    "MUL": ArithOperator(lambda a, b: a * b , CheckNumber, "__mul"),
+    "DIV": ArithOperator(lambda a, b: a / b , CheckNumber, "__div"),
+    "MOD": ArithOperator(lambda a, b: a % b , CheckNumber, "__mod"),
+    "POW": ArithOperator(lambda a, b: a ** b, CheckNumber, "__pow"),
+    "UNM": ArithOperator(lambda a: -a       , CheckNumber, "__unm"),
+    "BNOT": ArithOperator(lambda a: ~a      , CheckNumber, "__bnot"),
+
+    "EQ": ArithOperator(lambda a, b: a == b , CompareCheck, "__eq"),
+    "LT": ArithOperator(lambda a, b: a < b  , CompareCheck, "__lt"),
+    "LE": ArithOperator(lambda a, b: a <= b , CompareCheck, "__le"),
+}
+
+
+def lua_print(state: LuaState) -> int:
     n = state.get_top()
     outputs = []
     for i in range(n):
         outputs.append(str(state.stack[i]))
-    print(','.join(outputs))
-    return []
+    print(', '.join(outputs))
+    return 0
 
+def lua_getmetatable(state: LuaState) -> int:
+    idx = state.get_top() - 1
+    state.stack[0] = state.getmetatable(idx)
+    return 1
+
+def lua_setmetatable(state: LuaState) -> int:
+    idx = state.get_top() - 2
+    state.setmetatable(idx)
+    return 0
+
+def lua_next(state: LuaState) -> int:
+    result = state.next(0)
+    if result is not None:
+        state.pushvalue(result[0])
+        state.pushvalue(result[1])
+        return 2
+    else:
+        return 0
+
+def lua_pairs(state: LuaState) -> int:
+    table = state.stack[0]
+    if not table.is_table():
+        raise TypeError("pairs expects a table")
+    state.pushpyfunction(lua_next)
+    state.pushvalue(table)
+    state.pushnil()
+    return 3
 
 class Operator:
     @staticmethod
@@ -101,107 +210,57 @@ class Operator:
     def SELF(inst: Instruction, state: LuaState):
         a, b, c = inst.abc()
         # Self/method call not implemented yet
-        state.stack[a] = Value()
-        state.stack[a + 1] = Value()
+        vb = state.stack[b]
+        key = LuaVM.get_rk(state, c)
+        result = state.gettable(b, key)
+        state.stack[a + 1] = vb
+        state.stack[a] = result if result is not None else Value()
 
     @staticmethod
     def ADD(inst: Instruction, state: LuaState):
         a, b, c = inst.abc()
-        vb = LuaVM.get_rk(state, b)
-        vc = LuaVM.get_rk(state, c)
-        vb.string_to_number()
-        vc.string_to_number()
-        if vb.is_number() and vc.is_number():
-            state.stack[a] = Value(value=vb.value + vc.value)
-        else:
-            raise TypeError("ADD operands must be numbers")
+        ARITH["ADD"].arith(state, a, b, c)
 
     @staticmethod
     def SUB(inst: Instruction, state: LuaState):
         a, b, c = inst.abc()
-        vb = LuaVM.get_rk(state, b)
-        vc = LuaVM.get_rk(state, c)
-        vb.string_to_number()
-        vc.string_to_number()
-        if vb.is_number() and vc.is_number():
-            state.stack[a] = Value(value=vb.value - vc.value)
-        else:
-            raise TypeError("SUB operands must be numbers")
+        ARITH["SUB"].arith(state, a, b, c)
 
     @staticmethod
     def MUL(inst: Instruction, state: LuaState):
         a, b, c = inst.abc()
-        vb = LuaVM.get_rk(state, b)
-        vc = LuaVM.get_rk(state, c)
-        vb.string_to_number()
-        vc.string_to_number()
-        if vb.is_number() and vc.is_number():
-            state.stack[a] = Value(value=vb.value * vc.value)
-        else:
-            raise TypeError("MUL operands must be numbers")
+        ARITH["MUL"].arith(state, a, b, c)
 
     @staticmethod
     def DIV(inst: Instruction, state: LuaState):
         a, b, c = inst.abc()
-        vb = LuaVM.get_rk(state, b)
-        vc = LuaVM.get_rk(state, c)
-        vb.string_to_number()
-        vc.string_to_number()
-        if vb.is_number() and vc.is_number():
-            state.stack[a] = Value(value=vb.value / vc.value)
-        else:
-            raise TypeError("DIV operands must be numbers")
+        ARITH["DIV"].arith(state, a, b, c)
 
     @staticmethod
     def MOD(inst: Instruction, state: LuaState):
         a, b, c = inst.abc()
-        vb = LuaVM.get_rk(state, b)
-        vc = LuaVM.get_rk(state, c)
-        vb.string_to_number()
-        vc.string_to_number()
-        if vb.is_number() and vc.is_number():
-            state.stack[a] = Value(value=vb.value % vc.value)
-        else:
-            raise TypeError("MOD operands must be numbers")
+        ARITH["MOD"].arith(state, a, b, c)
 
     @staticmethod
     def POW(inst: Instruction, state: LuaState):
         a, b, c = inst.abc()
-        vb = LuaVM.get_rk(state, b)
-        vc = LuaVM.get_rk(state, c)
-        vb.string_to_number()
-        vc.string_to_number()
-        if vb.is_number() and vc.is_number():
-            state.stack[a] = Value(value=vb.value ** vc.value)
-        else:
-            raise TypeError("POW operands must be numbers")
+        ARITH["POW"].arith(state, a, b, c)
 
     @staticmethod
     def UNM(inst: Instruction, state: LuaState):
         a, b, _ = inst.abc()
-        vb = state.stack[b]
-        vb.string_to_number()
-        if vb.is_number():
-            state.stack[a] = Value(value=-vb.value)
-        else:
-            raise TypeError("UNM operand must be a number")
+        ARITH["UNM"].arith(state, a, b)
 
     @staticmethod
     def NOT(inst: Instruction, state: LuaState):
         a, b, _ = inst.abc()
         vb = state.stack[b]
-        state.stack[a] = Value(value=not vb.to_boolean())
+        state.stack[a] = Value(not vb.get_boolean())
 
     @staticmethod
     def LEN(inst: Instruction, state: LuaState):
         a, b, _ = inst.abc()
-        vb = state.stack[b]
-        if vb.is_string():
-            state.stack[a] = Value(value=len(vb.value))
-        elif vb.is_table():
-            state.stack[a] = Value(value=vb.value.len())
-        else:
-            raise TypeError("LEN operand must be a string or table")
+        state.stack[a] = Value(state.len(b))
 
     @staticmethod
     def CONCAT(inst: Instruction, state: LuaState):
@@ -224,43 +283,33 @@ class Operator:
     @staticmethod
     def EQ(inst: Instruction, state: LuaState):
         a, b, c = inst.abc()
-        vb = LuaVM.get_rk(state, b)
-        vc = LuaVM.get_rk(state, c)
-        if (vb.value == vc.value) != (a != 0):
+        if (ARITH['EQ'].compare(state, b, c)) != (a != 0):
             state.jump(1)
 
     @staticmethod
     def LT(inst: Instruction, state: LuaState):
         a, b, c = inst.abc()
-        vb = LuaVM.get_rk(state, b)
-        vc = LuaVM.get_rk(state, c)
-        vb.string_to_number()
-        vc.string_to_number()
-        if (vb.value < vc.value) != (a != 0):
+        if (ARITH['LT'].compare(state, b, c)) != (a != 0):
             state.jump(1)
 
     @staticmethod
     def LE(inst: Instruction, state: LuaState):
         a, b, c = inst.abc()
-        vb = LuaVM.get_rk(state, b)
-        vc = LuaVM.get_rk(state, c)
-        vb.string_to_number()
-        vc.string_to_number()
-        if (vb.value <= vc.value) != (a != 0):
+        if (ARITH['LE'].compare(state, b, c)) != (a != 0):
             state.jump(1)
 
     @staticmethod
     def TEST(inst: Instruction, state: LuaState):
         a, _, c = inst.abc()
         va = state.stack[a]
-        if va.to_boolean() != (c != 0):
+        if va.get_boolean() != (c != 0):
             state.jump(1)
 
     @staticmethod
     def TESTSET(inst: Instruction, state: LuaState):
         a, b, c = inst.abc()
         vb = state.stack[b]
-        if vb.to_boolean() == (c != 0):
+        if vb.get_boolean() == (c != 0):
             state.stack[a] = vb
         else:
             state.jump(1)
@@ -271,29 +320,49 @@ class Operator:
         # a: 函数在栈中的位置
         # b: 参数个数 + 1 (0表示从a+1到栈顶都是参数)
         # c: 返回值个数 + 1 (0表示保留所有返回值)
-
-        func_value = state.stack[a]
-        if not func_value.is_function():
-            raise TypeError("CALL requires a function")
-        
         nargs = b - 1 if b > 0 else len(state.stack) - a - 1
-
-        if type(func_value.value) is LClosure:
-            nargs = b - 1 if b > 0 else len(state.stack) - a - 1
-            state.prepare_call(func_value.value, a, nargs, c - 1)
-        else:
-            state.py_call(func_value.value, a, nargs, c - 1)
+        state.call(a, nargs, c - 1)
 
     @staticmethod
     def TAILCALL(inst: Instruction, state: LuaState):
-        a, b, c = inst.abc()
-        # Tail calls not implemented yet
-        pass
+        a, b, _ = inst.abc()
+        # a: 函数在栈中的位置
+        # b: 参数个数 + 1 (0表示从a+1到栈顶都是参数)
+        # c: 返回值个数（尾调用中总是0）
+
+        func_value = state.stack[a]
+        if not func_value.is_function():
+            raise TypeError("TAILCALL requires a function")
+        
+        nargs = b - 1 if b > 0 else len(state.stack) - a - 1
+        if type(func_value.value) is LClosure:
+            current_closure = state.call_info[-1]
+
+            new_closure = func_value.value
+            new_closure.stack = [Value()] * new_closure.func.maxstacksize
+            new_closure.pc = 0
+            new_closure.varargs = []
+
+            for i in range(nargs):
+                value = state.stack[a + 1 + i]
+                if i < new_closure.func.numparams:
+                    new_closure.stack[i] = value
+                else:
+                    new_closure.varargs.append(value)
+
+            new_closure.nrets = current_closure.nrets
+            new_closure.ret_idx = current_closure.ret_idx
+
+            state.call_info[-1] = new_closure
+            state.func = new_closure.func
+            state.stack = new_closure.stack
+        else:
+            state.pycall(func_value.value, a, nargs, -1)
 
     @staticmethod
     def RETURN(inst: Instruction, state: LuaState):
         a, b, _ = inst.abc()
-        state.return_from_call(a, b - 1)
+        state.poscall(a, b - 1)
 
     @staticmethod
     def FORLOOP(inst: Instruction, state: LuaState):
@@ -302,9 +371,9 @@ class Operator:
         idx = state.stack[a]
         limit = state.stack[a + 1]
 
-        step.string_to_number()
-        idx.string_to_number()
-        limit.string_to_number()
+        step.conv_str_to_number()
+        idx.conv_str_to_number()
+        limit.conv_str_to_number()
 
         if step.is_number() and idx.is_number() and limit.is_number():
             idx.value += step.value
@@ -323,8 +392,8 @@ class Operator:
         init = state.stack[a]
         step = state.stack[a + 2]
 
-        init.string_to_number()
-        step.string_to_number()
+        init.conv_str_to_number()
+        step.conv_str_to_number()
 
         if init.is_number() and step.is_number():
             state.stack[a] = Value(value=init.value - step.value)
@@ -335,8 +404,15 @@ class Operator:
     @staticmethod
     def TFORLOOP(inst: Instruction, state: LuaState):
         a, _, c = inst.abc()
-        # Iterator-based for loops not implemented yet
-        pass
+        func_idx = a + 3
+        for i in range(3):
+            state.stack[func_idx + i] = state.stack[a + i]
+        state.call(func_idx, 2, c)
+        next_inst = state.fetch()
+        _, sbx = next_inst.asbx()
+        if not state.stack[func_idx].is_nil():
+            state.stack[func_idx - 1] = state.stack[func_idx]
+            state.jump(sbx)
 
     @staticmethod
     def SETLIST(inst: Instruction, state: LuaState):
@@ -404,16 +480,24 @@ class LuaState:
     registry: Table
     globals: Table
 
+    # Global
+    mt: Table
+
     def __init__(self, main: Proto):
         self.call_info = [LClosure(main)]
         self.registry = Table()
         self.registry.set(Value(LUA_GLOBALS_INDEX), Value(value=Table()))
         self.globals = self.registry.get(Value(LUA_GLOBALS_INDEX)).value
+        self.mt = Table()
 
         self.func = self.call_info[-1].func
         self.stack = self.call_info[-1].stack
 
         self.register("print", lua_print)
+        self.register("getmetatable", lua_getmetatable)
+        self.register("setmetatable", lua_setmetatable)
+        self.register("next", lua_next)
+        self.register("pairs", lua_pairs)
 
     def get_top(self) -> int:
         return len(self.stack)
@@ -448,11 +532,63 @@ class LuaState:
     def register(self, name: str, func: callable):
         self.globals.set(Value(value=name), Value(value=PClosure(func)))
 
-    def prepare_call(self, closure: LClosure, func_idx: int = 0, args_count: int = 0, nrets: int = 0):
+    def getmetatable(self, idx: int):
+        obj = self.stack[idx]
+        mt = obj.get_metatable()
+        return mt if mt is not None else self.mt.get(Value(obj.type_name()))
+
+    def setmetatable(self, idx: int):
+        obj = self.stack[idx]
+        mt = self.stack[-1]
+        assert mt.is_table(), "Metatable must be a table"
+        if obj.is_table():
+            obj.value.setmetatable(mt.value)
+        else:
+            self.mt.set(Value(obj.type_name()), mt)
+
+    def gettable(self, idx: int, key: Value) -> Value:
+        t = self.stack[idx]
+        return t.gettable(key, self._luacall)
+
+    def len(self, idx: int) -> int:
+        t = self.stack[idx]
+        return t.len(self._luacall)
+
+    def call(self, idx: int, nargs: int, nrets: int):
+        func_value = self.stack[idx]
+        if func_value.is_function():
+            if type(func_value.value) is LClosure:
+                self.precall(func_value.value, idx, nargs, nrets)
+                while self.excute(): pass
+            else:
+                self.pycall(func_value.value, idx, nargs, nrets)
+        elif func_value.is_table():
+            mt = func_value.get_metatable()
+            func_value = mt.get(Value("__call")) if mt else None
+            if func_value and func_value.is_function():
+                self.stack[idx] = self._luacall(func_value.value, *self.stack[idx: idx + nargs + 1])
+        else:
+            raise TypeError("CALL error")
+
+    def excute(self) -> bool:
+        inst = self.fetch()
+        if inst is None:
+            return False
+        op_name = inst.op_name()
+        method = getattr(Operator, op_name, None)
+        if method:
+            print(f"-{len(state.call_info)}- " +  str(inst).ljust(40))
+            method(inst, self)
+            print(f"-{len(state.call_info)}- " +  ''.join(f"[{v}]" for v in state.stack))
+        if op_name == "RETURN":
+            return False
+        return True
+
+    def precall(self, closure: LClosure, func_idx: int = 0, nargs: int = 0, nrets: int = 0):
         closure.stack = [Value()] * closure.func.maxstacksize
         closure.pc = 0
         closure.varargs = []
-        for i in range(args_count):
+        for i in range(nargs):
             value = self.stack[func_idx + 1 + i]
             if i < closure.func.numparams:
                 closure.stack[i] = value
@@ -463,27 +599,24 @@ class LuaState:
         closure.ret_idx = func_idx
         self.push_closure(closure)
 
-    def py_call(self, closure: PClosure, func_idx: int = 0, args_count: int = 0, nrets: int = 0):
+    def pycall(self, closure: PClosure, func_idx: int = 0, args_count: int = 0, nrets: int = 0):
         closure.stack = []
         for i in range(args_count):
             value = self.stack[func_idx + 1 + i]
             closure.stack.append(value)
 
         self.push_closure(closure)
-        rets = closure.func(self)
+        ret_count = closure.func(self)
         self.pop_closure()
 
-        ret_count = len(rets)
+        ret_start = len(closure.stack) - ret_count
 
         for i in range(nrets):
-            ret_value = rets[i] if i < ret_count else Value()
-            self.stack.append(ret_value)
+            ret_value = closure.stack[ret_start + i] if i < ret_count else Value()
+            self.stack[func_idx + i] = ret_value
 
-    def return_from_call(self, ret_start, ret_count: int = 0):
+    def poscall(self, ret_start, ret_count: int = 0):
         closure = self.pop_closure()
-
-        if len(self.call_info) == 0:
-            return
 
         # Handle return values
         if ret_count == -1:
@@ -495,6 +628,42 @@ class LuaState:
         for i in range(closure.nrets):
             ret_value = closure.stack[ret_start + i] if i < ret_count else Value()
             self.stack[closure.ret_idx + i] = ret_value
+
+    def next(self, idx: int) -> Optional[tuple[Value, Value]]:
+        table = self.stack[idx]
+        key = self.stack[-1]
+        if not table.is_table():
+            raise TypeError("next expects a table")
+        return table.value.next(key)
+
+    def pushpyfunction(self, func: callable):
+        self.stack.append(Value(value=PClosure(func)))
+
+    def pushvalue(self, val: Value):
+        self.stack.append(val)
+
+    def pushnil(self):
+        self.stack.append(Value())
+
+    def _luacall(self, func, *args) -> Value:
+        nargs = len(args)
+        func_idx = len(self.stack)
+        self.stack.append(Value(value=func))
+        self.stack.extend(args)
+        self.call(func_idx, nargs, 1)
+        res = self.stack[func_idx]
+        while len(self.stack) > func_idx:
+            self.stack.pop()
+        return res
+    
+    def _get_rk(self, rk: int) -> Value:
+        """Get RK value: if rk >= 256, it's a constant index; otherwise it's a register"""
+        if rk >= 256:
+            # It's a constant (k)
+            return self.func.consts[rk - 256]
+        else:
+            # It's a register (r)
+            return self.stack[rk]
 
     def jump(self, offset: int):
         self.call_info[-1].pc += offset
@@ -523,21 +692,16 @@ class LuaVM:
         op_name = inst.op_name()
         method = getattr(Operator, op_name, None)
         if method:
+            print(f"-{len(state.call_info)}- " +  str(inst).ljust(40))
             method(inst, state)
-            print(str(inst).ljust(40) + ''.join(f"[{v}]" for v in state.stack))
+            print(f"-{len(state.call_info)}- " +  ''.join(f"[{v}]" for v in state.stack))
         # else:
         #     raise NotImplementedError(f"Operator {op_name} not implemented")
         return True
 
     @staticmethod
     def get_rk(state: LuaState, rk: int) -> Value:
-        """Get RK value: if rk >= 256, it's a constant index; otherwise it's a register"""
-        if rk >= 256:
-            # It's a constant (k)
-            return state.func.consts[rk - 256]
-        else:
-            # It's a register (r)
-            return state.stack[rk]
+        return state._get_rk(rk)
 
 
 class PyLua:
