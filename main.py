@@ -108,6 +108,23 @@ def lua_setmetatable(state: LuaState) -> int:
     state.setmetatable(idx)
     return 0
 
+def lua_ipairsaux(state: LuaState) -> int:
+    table = state.stack[0]
+    index = state.stack[1]
+    if not table.is_table():
+        raise TypeError("ipairsaux expects a table")
+    index.conv_str_to_number()
+    if not index.is_number():
+        raise TypeError("ipairsaux index must be a number")
+    next_index = index.value + 1
+    value = table.value.get(next_index)
+    if value is not None:
+        state.pushvalue(Value(next_index))
+        state.pushvalue(value)
+        return 2
+    else:
+        return 0
+
 def lua_next(state: LuaState) -> int:
     result = state.next(0)
     if result is not None:
@@ -116,6 +133,15 @@ def lua_next(state: LuaState) -> int:
         return 2
     else:
         return 0
+
+def lua_ipairs(state: LuaState) -> int:
+    table = state.stack[0]
+    if not table.is_table():
+        raise TypeError("ipairs expects a table")
+    state.pushpyfunction(lua_ipairsaux)
+    state.pushvalue(table)
+    state.pushvalue(Value(0))
+    return 3
 
 def lua_pairs(state: LuaState) -> int:
     table = state.stack[0]
@@ -497,6 +523,7 @@ class LuaState:
         self.register("getmetatable", lua_getmetatable)
         self.register("setmetatable", lua_setmetatable)
         self.register("next", lua_next)
+        self.register("ipairs", lua_ipairs)
         self.register("pairs", lua_pairs)
 
     def get_top(self) -> int:
