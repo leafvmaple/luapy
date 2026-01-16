@@ -91,6 +91,9 @@ class Value:
 
     def is_function(self) -> bool:
         return type(self.value) in (LClosure, PClosure)
+    
+    def is_userdata(self) -> bool:
+        return False  # Placeholder for userdata type
 
     def type_name(self) -> str:
         if self.is_nil():

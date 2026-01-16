@@ -8,7 +8,16 @@ from lua_table import Table
 from lua_function import LClosure, PClosure, Proto
 from lua_builtins import BUILTIN
 
+LUA_REGISTRY_INDEX = -10000
 LUA_GLOBALS_INDEX = -10002
+
+
+LUA_OK     = 0
+LUA_YIELD  = 1
+LUA_ERRRUN = 2
+LUA_ERRSYNTAX = 3
+LUA_ERRMEM = 4
+LUA_ERRERR = 5
 
 
 class LuaState:
@@ -42,15 +51,6 @@ class LuaState:
         self.register("error", BUILTIN.lua_error)
         self.register("pcall", BUILTIN.lua_pcall)
 
-    def get_top(self) -> int:
-        return len(self.stack)
-
-    def set_top(self, idx: int):
-        while len(self.stack) > idx:
-            self.stack.pop()
-        while len(self.stack) < idx:
-            self.stack.append(Value.nil())
-
     def get_global(self, name: str) -> Value:
         key = Value.string(name)
         value = self.globals.get(key)
@@ -75,19 +75,74 @@ class LuaState:
     def register(self, name: str, func: callable):
         self.globals.set(Value.string(name), Value.closure(PClosure(func)))
 
-    def getmetatable(self, idx: int):
-        obj = self.stack[idx]
-        mt = obj.get_metatable()
-        return mt if mt is not None else self.mt.get(Value.string(obj.type_name()))
+    def _getmetatable(self, val: Value) -> Value | None:
+        if val.is_table() or val.is_userdata():
+            mt = val.get_metatable()
+            return Value.table(mt) if mt else None
+        else:
+            return self.mt.get(Value.string(val.type_name()))
 
-    def setmetatable(self, idx: int):
-        obj = self.stack[idx]
+    # external metamethods
+    def pop(self, n: int) -> None:
+        for _ in range(n):
+            self.stack.pop()
+
+    def remove(self, idx: int) -> None:
+        assert idx != 0, "Index cannot be zero"
+        if idx < 0:
+            self.stack.pop(idx)
+        elif idx > 0:
+            self.stack.pop(idx - 1)
+
+    def gettop(self) -> int:
+        return len(self.stack)
+
+    def settop(self, idx: int):
+        while len(self.stack) > idx:
+            self.stack.pop()
+        while len(self.stack) < idx:
+            self.stack.append(Value.nil())
+
+    def pushstring(self, s: str):
+        self.stack.append(Value.string(s))
+
+    def rawget(self, idx: int) -> None:
+        t = self._index2adr(idx)
+        if not t.is_table():
+            raise TypeError("rawget expects a table")
+        key = self.stack[-1]
+        value = t.value.get(key)
+        if value is None:
+            value = Value.nil()
+        self.stack[-1] = value
+
+    def getmetatable(self, idx: int) -> int:
+        obj = self._index2adr(idx)
+        mt = self._getmetatable(obj)
+        if mt is None:
+            return 0
+        self.stack.append(mt)
+        return 1
+
+    def setmetatable(self, idx: int) -> None:
+        obj = self._index2adr(idx)
         mt = self.stack[-1]
         assert mt.is_table(), "Metatable must be a table"
         if obj.is_table():
             obj.value.setmetatable(mt.value)
         else:
             self.mt.set(Value.string(obj.type_name()), mt)
+
+    def getmetafield(self, idx: int, field: str) -> int:
+        if self.getmetatable(idx) == 0:
+            return 0
+        self.pushstring(field)
+        self.rawget(-2)
+        if self.stack[-1].is_nil():
+            self.pop(2)
+            return 0
+        self.remove(-2)
+        return 1
 
     def gettable(self, idx: int, key: Value) -> Value:
         t = self.stack[idx]
@@ -115,7 +170,7 @@ class LuaState:
         else:
             raise TypeError("CALL error")
         
-    def pcall(self, idx: int, nargs: int, nrets: int):
+    def pcall(self, idx: int, nargs: int, nrets: int) -> int:
         ci_len = len(self.call_info)
         try:
             self.call(idx, nargs, nrets)
@@ -124,8 +179,15 @@ class LuaState:
                 self.pop_closure()
             self.stack.clear()
             self.pushvalue(Value.string(str(e)))
-            return False
-        return True
+            if e is RuntimeError:
+                return LUA_ERRRUN
+            elif e is SyntaxError:
+                return LUA_ERRSYNTAX
+            elif e is MemoryError:
+                return LUA_ERRMEM
+            else:
+                return LUA_ERRERR
+        return LUA_OK
         
     def error(self):
         value = self.stack[-1]
@@ -138,9 +200,9 @@ class LuaState:
         op_name = inst.op_name()
         method = getattr(Operator, op_name, None)
         if method:
-            print(f"-{len(self.call_info)}- " +  str(inst).ljust(40))
+            # print(f"-{len(self.call_info)}- " +  str(inst).ljust(40))
             method(inst, self)
-            print(f"-{len(self.call_info)}- " +  ''.join(f"[{v}]" for v in self.stack))
+            # print(f"-{len(self.call_info)}- " +  ''.join(f"[{v}]" for v in self.stack))
         if op_name == "RETURN":
             return False
         return True
@@ -203,6 +265,9 @@ class LuaState:
     def pushvalue(self, val: Value):
         self.stack.append(val)
 
+    def pushboolean(self, b: bool):
+        self.stack.append(Value.boolean(b))
+
     def insert(self, idx: int):
         val = self.stack.pop()
         self.stack.insert(idx - 1, val)
@@ -229,6 +294,19 @@ class LuaState:
         else:
             # It's a register (r)
             return self.stack[rk]
+        
+    def _index2adr(self, idx: int) -> Value:
+        """Convert Lua stack index to Value reference"""
+        if idx > 0:
+            return self.stack[idx - 1]
+        elif idx > LUA_GLOBALS_INDEX:   # idx < 0
+            return self.stack[len(self.stack) + idx]
+        else:
+            if idx == LUA_GLOBALS_INDEX:
+                return Value.table(self.globals)
+            elif idx == LUA_REGISTRY_INDEX:
+                return Value.table(self.registry)
+            raise IndexError("Invalid stack index")
 
     def jump(self, offset: int):
         self.call_info[-1].pc += offset

@@ -11,7 +11,7 @@ from lua_value import Value
 class BUILTIN:
     @staticmethod
     def lua_print(state: LuaState) -> int:
-        n = state.get_top()
+        n = state.gettop()
         outputs = []
         for i in range(n):
             outputs.append(str(state.stack[i]))
@@ -20,14 +20,16 @@ class BUILTIN:
     
     @staticmethod
     def lua_getmetatable(state: LuaState) -> int:
-        idx = state.get_top() - 1
-        state.stack[0] = state.getmetatable(idx)
+        if state.getmetatable(1) != 1:
+            state.pushnil()
         return 1
     
     @staticmethod
     def lua_setmetatable(state: LuaState) -> int:
-        idx = state.get_top() - 2
-        state.setmetatable(idx)
+        if (state.getmetafield(1, "__metatable") != 0):
+            raise RuntimeError("cannot change a protected metatable")
+        state.settop(2)
+        state.setmetatable(1)
         return 0
     
     @staticmethod
@@ -85,8 +87,8 @@ class BUILTIN:
     
     @staticmethod
     def lua_pcall(state: LuaState) -> int:
-        nargs = len(state.stack) - 1
+        nargs = state.gettop() - 1
         status = state.pcall(0, nargs, -1)
-        state.pushvalue(Value.boolean(status))
+        state.pushboolean(status == 0)
         state.insert(1)
-        return state.get_top()
+        return state.gettop()

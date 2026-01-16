@@ -21,9 +21,9 @@ class LuaVM:
         op_name = inst.op_name()
         method = getattr(Operator, op_name, None)
         if method:
-            print(f"-{len(state.call_info)}- " +  str(inst).ljust(40))
+            # print(f"-{len(state.call_info)}- " +  str(inst).ljust(40))
             method(inst, state)
-            print(f"-{len(state.call_info)}- " +  ''.join(f"[{v}]" for v in state.stack))
+            # print(f"-{len(state.call_info)}- " +  ''.join(f"[{v}]" for v in state.stack))
         return True
 
     @staticmethod

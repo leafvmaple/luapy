@@ -96,7 +96,6 @@ class LClosure(Closure):
     # debug
     def print_stack(self):
         pass
-        # print(f'{self.func.codes[self.pc - 1].op_name().ljust(10)}' + ''.join(f"[{v}]" for v in self.stack))
 
 
 class PClosure(Closure):

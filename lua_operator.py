@@ -290,20 +290,20 @@ class Operator:
     @staticmethod
     def CALL(inst: Instruction, state: LuaState):
         a, b, c = inst.abc()
-        nargs = b - 1 if b != 0 else state.get_top() - a - 1
+        nargs = b - 1 if b != 0 else len(state.stack) - a - 1
         nrets = c - 1
         state.call(a, nargs, nrets)
 
     @staticmethod
     def TAILCALL(inst: Instruction, state: LuaState):
         a, b, _ = inst.abc()
-        nargs = b - 1 if b != 0 else state.get_top() - a - 1
+        nargs = b - 1 if b != 0 else len(state.stack) - a - 1
         state.call(a, nargs, -1)
 
     @staticmethod
     def RETURN(inst: Instruction, state: LuaState):
         a, b, _ = inst.abc()
-        ret_count = b - 1 if b != 0 else state.get_top() - a
+        ret_count = b - 1 if b != 0 else len(state.stack) - a
         state.poscall(a, ret_count)
 
     @staticmethod
@@ -346,7 +346,7 @@ class Operator:
         if not table.is_table():
             raise TypeError("SETLIST expects a table")
         
-        n = b if b != 0 else state.get_top() - a - 1
+        n = b if b != 0 else len(state.stack) - a - 1
         base = (c - 1) * 50
         
         for i in range(1, n + 1):
